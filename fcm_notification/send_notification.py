@@ -90,7 +90,7 @@ def process_notification(device, notification):
         send_fcm_message(device, title, message, data)
 
 
-def send_fcm_message(device, title, message, data):
+def send_fcm_message(device, title, message, data, is_alert=True):
     initialize_firebase()
     """Send FCM notification to a specific device"""
     try:
@@ -99,7 +99,7 @@ def send_fcm_message(device, title, message, data):
                 data=data,
                 token=device.device_id,
                 android=messaging.AndroidConfig(
-                    priority="normal",
+                    priority="high",
                     notification=messaging.AndroidNotification(
                         title=title,
                         body=message,
@@ -112,7 +112,11 @@ def send_fcm_message(device, title, message, data):
                 apns=messaging.APNSConfig(
                     payload=messaging.APNSPayload(
                         aps=messaging.Aps(
-                            alert=messaging.ApsAlert(title=title, body=message),
+                            alert=(
+                                messaging.ApsAlert(title=title, body=message)
+                                if is_alert
+                                else None
+                            ),
                             sound="default",
                             custom_data=data,
                         ),
@@ -156,6 +160,7 @@ def invalidate_user_devices_cache_hooks(doc, method):
     """Invalidate the cache for user devices when a User Device is updated or inserted."""
     user = doc.user
     invalidate_user_devices_cache(user)
+
 
 def invalidate_user_devices_cache(user):
     """Invalidate the cache for user devices."""

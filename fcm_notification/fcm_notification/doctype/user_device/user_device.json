@@ -81,12 +81,11 @@
   },
   {
    "fieldname": "device_id",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "in_standard_filter": 1,
    "label": "Device ID",
    "length": 250,
-   "reqd": 1,
-   "unique": 1
+   "reqd": 1
   },
   {
    "fieldname": "column_break_rzak",
@@ -415,9 +414,10 @@
    "label": "Enabled"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-06-03 22:50:29.525556",
+ "modified": "2025-07-29 15:32:57.547285",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "User Device",
@@ -463,6 +463,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

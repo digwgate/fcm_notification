@@ -1,15 +1,29 @@
 {
  "actions": [],
- "allow_rename": 1,
  "creation": "2022-02-06 15:25:27.453748",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
   "settings_section",
-  "server_key",
-  "column_break_sssb",
-  "credentials"
+  "credentials",
+  "section_break_znut",
+  "notifications_trigger_type",
+  "configuration_tab",
+  "analytics_label",
+  "android_notification_options_section",
+  "collapse_key",
+  "priority",
+  "ttl",
+  "column_break_hjga",
+  "restricted_package_name",
+  "channel_id",
+  "ios_notification_options_section",
+  "ios_sound_settings_column",
+  "ios_sound_name",
+  "ios_sound_critical",
+  "ios_sound_volume",
+  "column_break_mwwi"
  ],
  "fields": [
   {
@@ -18,25 +32,113 @@
    "label": "Settings"
   },
   {
-   "fieldname": "server_key",
-   "fieldtype": "Data",
-   "label": "Server Key",
-   "length": 250
-  },
-  {
    "fieldname": "credentials",
    "fieldtype": "Attach",
    "label": "Credentials"
   },
   {
-   "fieldname": "column_break_sssb",
+   "fieldname": "section_break_znut",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "notifications_trigger_type",
+   "fieldtype": "Table",
+   "label": "Notifications Trigger Type",
+   "options": "Notification Trigger Type"
+  },
+  {
+   "fieldname": "configuration_tab",
+   "fieldtype": "Tab Break",
+   "label": "Configuration"
+  },
+  {
+   "fieldname": "android_notification_options_section",
+   "fieldtype": "Section Break",
+   "label": "Android Notification Options"
+  },
+  {
+   "description": "Collapse key string for the message (optional). This is an identifier for a group of messages that can be collapsed, so that only the last message is sent when delivery can be resumed. A maximum of 4 different collapse keys may be active at a given time.",
+   "fieldname": "collapse_key",
+   "fieldtype": "Data",
+   "label": "Collapse Key"
+  },
+  {
+   "default": "high",
+   "description": "Priority of the message (optional). Must be one of high or normal.",
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "label": "Priority",
+   "options": "high\nnormal"
+  },
+  {
+   "description": "The time-to-live duration of the message (optional). This can be specified as a numeric seconds value or a datetime.timedelta instance.",
+   "fieldname": "ttl",
+   "fieldtype": "Int",
+   "label": "TTL"
+  },
+  {
+   "fieldname": "column_break_hjga",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "The package name of the application where the registration tokens must match in order to receive the message (optional).",
+   "fieldname": "restricted_package_name",
+   "fieldtype": "Data",
+   "label": "Restricted Package Name"
+  },
+  {
+   "description": "contains additional options for features provided by the FCM Android SDK (optional).",
+   "fieldname": "analytics_label",
+   "fieldtype": "Data",
+   "label": "Analytics Label"
+  },
+  {
+   "default": "high_importance_channel",
+   "description": "channel_id of the notification (optional).",
+   "fieldname": "channel_id",
+   "fieldtype": "Data",
+   "label": "Default Channel ID"
+  },
+  {
+   "fieldname": "ios_notification_options_section",
+   "fieldtype": "Section Break",
+   "label": "IOS Notification Options"
+  },
+  {
+   "fieldname": "ios_sound_settings_column",
+   "fieldtype": "Column Break",
+   "label": "IOS Sound Settings"
+  },
+  {
+   "default": "default",
+   "description": "The name of a sound file in your app's main bundle or in the Library/Sounds folder of your app's container directory. Specify the string default to play the system sound.",
+   "fieldname": "ios_sound_name",
+   "fieldtype": "Data",
+   "label": "Sound Name"
+  },
+  {
+   "default": "1",
+   "description": "Set to True to set the critical alert flag on the sound configuration (optional).",
+   "fieldname": "ios_sound_critical",
+   "fieldtype": "Check",
+   "label": "Critical"
+  },
+  {
+   "default": "1",
+   "description": "The volume for the critical alert's sound. Must be a value between 0.0 (silent) and 1.0 (full volume) (optional).",
+   "fieldname": "ios_sound_volume",
+   "fieldtype": "Float",
+   "label": "IOS Notification Sound Volume",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "column_break_mwwi",
    "fieldtype": "Column Break"
   }
  ],
- "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2024-04-16 02:21:11.830608",
+ "modified": "2025-12-25 23:26:25.046755",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "FCM Notification Settings",
@@ -53,6 +155,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

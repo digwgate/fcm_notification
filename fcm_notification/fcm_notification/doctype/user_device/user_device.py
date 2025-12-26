@@ -11,13 +11,15 @@ class UserDevice(Document):
 
 
 @frappe.whitelist()
-def handle_user_device(device_data):
-    device_id = device_data.get("device_id")
-    if not device_id:
+def handle_user_device(device_data: dict) -> dict:
+    device_token = device_data.get("device_token")
+    if not device_token:
         frappe.throw(frappe._("Device ID is required"))
-    if frappe.db.exists("User Device", {"device_id": device_id, "user": frappe.session.user}):
+    if frappe.db.exists(
+        "User Device", {"device_token": device_token, "user": frappe.session.user}
+    ):
         # Update the existing record
-        user_device = frappe.get_doc("User Device", {"device_id": device_id})
+        user_device = frappe.get_doc("User Device", {"device_token": device_token})
         user_device.update(device_data)
         user_device.save(ignore_permissions=True)
         frappe.db.commit()
@@ -26,19 +28,21 @@ def handle_user_device(device_data):
     user_device.update(device_data)
     user_device.save(ignore_permissions=True)
     frappe.db.commit()
-    return {
-        "device_id": user_device.device_id,
-        "result": "success"
-    }
+    return {"device_token": user_device.device_token, "result": "success"}
+
+
 @frappe.whitelist(methods=["DELETE"])
-def unregister_notification_token():
+def unregister_notification_token(device_token: str | None = None) -> None:
     """Unregister a notification token for the current user."""
+    filters = {
+        "user": frappe.session.user,
+    }
+    if device_token:
+        filters["device_token"] = device_token
     # Remove the token from the user's devices
     frappe.db.delete(
         "User Device",
-        {
-            "user": frappe.session.user,
-        },
+        filters,
     )
     invalidate_user_devices_cache(frappe.session.user)
 

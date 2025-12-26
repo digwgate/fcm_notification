@@ -18,8 +18,8 @@ def initialize_firebase():
 
 def user_id(doc):
     user_email = doc.for_user
-    user_device_id = get_user_devices(user_email)
-    return user_device_id
+    user_device_token = get_user_devices(user_email)
+    return user_device_token
 
 
 def get_user_devices(user):
@@ -33,7 +33,7 @@ def get_user_devices(user):
     devices = frappe.get_all(
         "User Device",
         filters={"user": user, "enabled": True},
-        fields=["Distinct(device_id) as device_id", "name", "user"],
+        fields=["Distinct(device_token) as device_token", "name", "user"],
         order_by="creation desc",
         limit_page_length=5,
     )
@@ -47,14 +47,18 @@ def get_user_devices(user):
 @frappe.whitelist()
 def send_notification(doc, event=None):
     if event != None:
-        device_ids = user_id(doc)
-        for dvs in device_ids:
-            enqueue(
-                process_notification,
-                queue="notifications_queue",
-                device=dvs,
-                notification=doc,
-            )
+        device_tokens = user_id(doc)
+        send_now = doc.send_now or False
+        for dvs in device_tokens:
+            if not send_now:
+                enqueue(
+                    process_notification,
+                    queue="notifications_queue",
+                    device=dvs,
+                    notification=doc,
+                )
+            else:
+                process_notification(dvs, doc)
 
 
 def convert_message(message):
@@ -97,7 +101,7 @@ def send_fcm_message(device, title, message, data, is_alert=True):
         messaging.send(
             message=messaging.Message(
                 data=data,
-                token=device.device_id,
+                token=device.device_token,
                 android=messaging.AndroidConfig(
                     priority="high",
                     notification=messaging.AndroidNotification(
@@ -117,7 +121,7 @@ def send_fcm_message(device, title, message, data, is_alert=True):
                                 if is_alert
                                 else None
                             ),
-                            sound="default",
+                            sound=messaging.CriticalSound(),
                             custom_data=data,
                         ),
                     )
@@ -134,11 +138,11 @@ def send_fcm_message(device, title, message, data, is_alert=True):
         frappe.db.commit()
         frappe.log_error(
             title="Unregistered Device",
-            message=f"Device {device.device_id} is unregistered. Error: {str(e)}",
+            message=f"Device {device.device_token} is unregistered. Error: {str(e)}",
             reference_doctype="User Device",
             reference_name=device.name,
         )
-        return device.device_id
+        return device.device_token
     except messaging.SenderIdMismatchError:
         frappe.db.set_value("User Device", device.name, "enabled", 0)
         # Invalidate cache for this device
@@ -146,14 +150,45 @@ def send_fcm_message(device, title, message, data, is_alert=True):
         frappe.db.commit()
         frappe.log_error(
             title="Sender ID Mismatch",
-            message=f"Device {device.device_id} is mismatched: {str(e)}",
+            message=f"Device {device.device_token} is mismatched: {str(e)}",
             reference_doctype="User Device",
             reference_name=device.name,
         )
-        return device.device_id
+        return device.device_token
     except Exception as e:
         frappe.error_log(f"Error sending notification: {e}")
         return None
+
+
+def populate_payload_data(doc, event):
+    """Populate Notification Log payload using Notification Payload mapping."""
+    if not (doc.document_type and doc.document_name):
+        return
+
+    payload_doc_name = frappe.db.get_value(
+        "Notification Payload",
+        filters={"for_doctype": doc.document_type, "disabled": 0},
+    )
+    if not payload_doc_name:
+        return
+
+    mapping_doc = frappe.get_doc("Notification Payload", payload_doc_name)
+    if not mapping_doc.fields_mapper:
+        return
+
+    source_doc = frappe.get_cached_doc(doc.document_type, doc.document_name)
+
+    payload = {
+        "doctype": doc.document_type,
+        "docname": doc.document_name,
+    }
+
+    for row in mapping_doc.fields_mapper:
+        if not (row.key and row.doc_field):
+            continue
+        payload[row.key] = source_doc.get(row.doc_field)
+
+    doc.payload = payload
 
 
 def invalidate_user_devices_cache_hooks(doc, method):

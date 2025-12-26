@@ -2,11 +2,11 @@ from . import __version__ as app_version
 
 app_name = "fcm_notification"
 app_title = "Fcm Notification"
-app_publisher = "Raheeb"
+app_publisher = "Mohammed Awni"
 app_description = "Sends Frappe notifications to devices via Firebase Cloud Message"
 app_icon = "octicon octicon-file-directory"
 app_color = "grey"
-app_email = "rahibhassan.10@gmail.com"
+app_email = "dev@dgate.tech"
 app_license = "MIT"
 
 # Includes in <head>
@@ -105,7 +105,8 @@ app_license = "MIT"
 
 doc_events = {
     "Notification Log": {
-        "before_insert": "fcm_notification.send_notification.send_notification"
+        "before_insert": "fcm_notification.send_notification.populate_payload_data",
+        "after_insert": "fcm_notification.send_notification.send_notification",
     },
     "User Device": {
         "on_update": "fcm_notification.send_notification.invalidate_user_devices_cache_hooks",
@@ -161,24 +162,24 @@ doc_events = {
 # User Data Protection
 # --------------------
 
-user_data_fields = [
-    {
-        "doctype": "{doctype_1}",
-        "filter_by": "{filter_by}",
-        "redact_fields": ["{field_1}", "{field_2}"],
-        "partial": 1,
-    },
-    {
-        "doctype": "{doctype_2}",
-        "filter_by": "{filter_by}",
-        "partial": 1,
-    },
-    {
-        "doctype": "{doctype_3}",
-        "strict": False,
-    },
-    {"doctype": "{doctype_4}"},
-]
+# user_data_fields = [
+#     {
+#         "doctype": "{doctype_1}",
+#         "filter_by": "{filter_by}",
+#         "redact_fields": ["{field_1}", "{field_2}"],
+#         "partial": 1,
+#     },
+#     {
+#         "doctype": "{doctype_2}",
+#         "filter_by": "{filter_by}",
+#         "partial": 1,
+#     },
+#     {
+#         "doctype": "{doctype_3}",
+#         "strict": False,
+#     },
+#     {"doctype": "{doctype_4}"},
+# ]
 
 # Authentication and authorization
 # --------------------------------

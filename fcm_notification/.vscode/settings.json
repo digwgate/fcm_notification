@@ -1,0 +1,11 @@
+{
+    "python.analysis.extraPaths": [
+        "../../frappe",
+        "../../education",
+        "../../hrms",
+        "../../erpnext",
+        "../../fcm_notification",
+        "../../firebase_auth",
+    ],
+    "yaml.schemaStore.enable": false
+}

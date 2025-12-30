@@ -11,6 +11,7 @@
   "device_name",
   "model",
   "enabled",
+  "physical_ram_size",
   "naming_series",
   "column_break_rzak",
   "device_token",
@@ -46,7 +47,6 @@
   "product",
   "tags",
   "type",
-  "serial_number",
   "is_low_ram_device",
   "column_break_sipp",
   "supported32bit_abis",
@@ -230,12 +230,6 @@
    "read_only": 1
   },
   {
-   "fieldname": "serial_number",
-   "fieldtype": "Data",
-   "label": "serial_number",
-   "read_only": 1
-  },
-  {
    "fieldname": "tags",
    "fieldtype": "Data",
    "label": "tags",
@@ -413,12 +407,19 @@
    "length": 250,
    "no_copy": 1,
    "reqd": 1
+  },
+  {
+   "fieldname": "physical_ram_size",
+   "fieldtype": "Int",
+   "label": "Physical Ram Size",
+   "non_negative": 1,
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-25 23:36:08.858593",
+ "modified": "2025-12-29 17:34:58.539449",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "User Device",

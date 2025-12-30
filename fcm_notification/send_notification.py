@@ -1,4 +1,8 @@
+import datetime
+import json
+import os
 import re
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import firebase_admin
 import frappe
@@ -6,20 +10,347 @@ from firebase_admin import credentials, messaging
 from frappe import enqueue
 
 
-def initialize_firebase():
-    firebase_settings = frappe.get_single("Firebase Settings")
-    service_account = firebase_settings.service_account
-    try:
-        admin = firebase_admin.get_app()
-    except ValueError:
-        cred = credentials.Certificate(frappe.get_site_path() + service_account)
-        firebase_admin.initialize_app(cred)
+class FCMNotificationService:
+    """Encapsulates FCM initialization and Notification Log delivery."""
+
+    _app = None
+
+    def __init__(self):
+        self.settings = frappe.get_cached_doc("FCM Notification Settings")
+
+    def ensure_initialized(self):
+        """Initialize Firebase once using the credentials from settings."""
+        if self.__class__._app:
+            return self.__class__._app
+
+        try:
+            self.__class__._app = firebase_admin.get_app()
+            return self.__class__._app
+        except ValueError:
+            pass
+
+        if not self.settings.credentials:
+            frappe.throw(
+                "FCM credentials are not configured in FCM Notification Settings."
+            )
+
+        credentials_path = os.path.join(
+            frappe.get_site_path(), self.settings.credentials.lstrip("/").lstrip("./")
+        )
+        cred = credentials.Certificate(credentials_path)
+        self.__class__._app = firebase_admin.initialize_app(cred)
+        return self.__class__._app
+
+    def allowed_notification_type(self, notification_type: Optional[str]) -> bool:
+        """Check if notification type is allowed per settings (empty list means allow all)."""
+        allowed_types = {
+            row.type
+            for row in (self.settings.notifications_trigger_type or [])
+            if row.type
+        }
+        if not allowed_types:
+            return True
+        return notification_type in allowed_types
+
+    def build_data_payload(self, notification) -> Dict[str, str]:
+        """Prepare data payload that will be delivered with the message."""
+        payload = notification.payload or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+
+        base = {
+            "doctype": notification.document_type or "",
+            "docname": notification.document_name or "",
+            "type": notification.type or "",
+        }
+
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                base[key] = value
+
+        if notification.subject:
+            base.setdefault("title", convert_message(notification.subject))
+        if notification.email_content:
+            base.setdefault("message", convert_message(notification.email_content))
+
+        return stringify_data(base)
+
+    def build_android_config(self, title: str, body: str):
+        ttl = (
+            datetime.timedelta(seconds=int(self.settings.ttl))
+            if self.settings.ttl
+            else None
+        )
+
+        android_options = (
+            messaging.AndroidFCMOptions(analytics_label=self.settings.analytics_label)
+            if self.settings.analytics_label
+            else None
+        )
+
+        return messaging.AndroidConfig(
+            collapse_key=self.settings.collapse_key or None,
+            priority=self.settings.priority or None,
+            ttl=ttl,
+            restricted_package_name=self.settings.restricted_package_name or None,
+            notification=messaging.AndroidNotification(
+                title=title or None,
+                body=body or None,
+                channel_id=self.settings.channel_id or None,
+            ),
+            fcm_options=android_options,
+        )
+
+    def build_apns_config(self, title: str, body: str, data: Dict[str, str]):
+        sound: Union[str, messaging.CriticalSound, None] = None
+        if (
+            self.settings.ios_sound_name
+            or self.settings.ios_sound_critical
+            or self.settings.ios_sound_volume
+        ):
+            if self.settings.ios_sound_critical:
+                sound = messaging.CriticalSound(
+                    name=self.settings.ios_sound_name or "default",
+                    critical=bool(self.settings.ios_sound_critical),
+                    volume=float(self.settings.ios_sound_volume or 1),
+                )
+            else:
+                sound = self.settings.ios_sound_name or "default"
+
+        apns_options = (
+            messaging.APNSFCMOptions(analytics_label=self.settings.analytics_label)
+            if self.settings.analytics_label
+            else None
+        )
+
+        return messaging.APNSConfig(
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    alert=messaging.ApsAlert(title=title or None, body=body or None),
+                    sound=sound,
+                    custom_data=data,
+                )
+            ),
+            fcm_options=apns_options,
+        )
+
+    def build_common_fcm_options(self):
+        if not self.settings.analytics_label:
+            return None
+        return messaging.FCMOptions(analytics_label=self.settings.analytics_label)
+
+    def safe_send_to_device(
+        self,
+        device: Union[Dict[str, Any], Any],
+        data: Dict[str, str],
+        title: str,
+        body: str,
+        notification_name: Optional[str] = None,
+        notification_type: Optional[str] = None,
+        user: Optional[str] = None,
+    ):
+        """Send message to a single device, handling cleanup on token errors."""
+        try:
+            self.send_to_device(device, data, title, body)
+        except messaging.UnregisteredError as e:
+            self._disable_device(device, user=user, reason=f"Unregistered Device: {e}")
+            return self._device_token(device)
+        except messaging.SenderIdMismatchError as e:
+            self._disable_device(device, user=user, reason=f"Sender ID Mismatch: {e}")
+            return self._device_token(device)
+        except Exception as e:
+            frappe.log_error(
+                title="Error sending FCM notification",
+                message=f"Notification: {notification_name or ''} | Device: {self._device_token(device)} | Error: {e}",
+            )
+            return None
+
+    def send_to_device(
+        self,
+        device: Union[Dict[str, Any], Any],
+        data: Dict[str, str],
+        title: str,
+        body: str,
+    ):
+        self.ensure_initialized()
+        message = messaging.Message(
+            data=data,
+            token=self._device_token(device),
+            android=self.build_android_config(title, body),
+            apns=self.build_apns_config(title, body, data),
+            fcm_options=self.build_common_fcm_options(),
+        )
+        messaging.send(message)
+
+    def dispatch(
+        self,
+        notification,
+        event=None,
+        send_async: Optional[bool] = None,
+        devices: Optional[Iterable[Union[str, Dict[str, Any]]]] = None,
+    ):
+        """Send a Notification Log to user devices, honoring settings and triggers."""
+        if not self.allowed_notification_type(getattr(notification, "type", None)):
+            return
+
+        device_records = self._prepare_devices(notification, devices)
+        if not device_records:
+            return
+
+        data = self.build_data_payload(notification)
+        title = convert_message(notification.subject or "")
+        body = convert_message(notification.email_content or "")
+
+        send_async = (
+            send_async
+            if send_async is not None
+            else not bool(getattr(notification, "send_now", False))
+        )
+
+        for device in device_records:
+            if send_async:
+                enqueue(
+                    _queue_send_device,
+                    queue="notifications_queue",
+                    device=device,
+                    data=data,
+                    title=title,
+                    body=body,
+                    notification_name=getattr(notification, "name", None),
+                    notification_type=getattr(notification, "type", None),
+                    user=getattr(notification, "for_user", None),
+                )
+            else:
+                self.safe_send_to_device(
+                    device,
+                    data=data,
+                    title=title,
+                    body=body,
+                    notification_name=getattr(notification, "name", None),
+                    notification_type=getattr(notification, "type", None),
+                    user=getattr(notification, "for_user", None),
+                )
+
+    def _prepare_devices(
+        self,
+        notification,
+        devices: Optional[Iterable[Union[str, Dict[str, Any]]]],
+    ) -> List[Dict[str, Any]]:
+        if devices is None:
+            return get_user_devices(notification.for_user)
+
+        prepared = []
+        for device in devices:
+            if isinstance(device, dict):
+                prepared.append(device)
+            else:
+                prepared.append(
+                    {
+                        "device_token": device,
+                        "user": getattr(notification, "for_user", None),
+                    }
+                )
+        return prepared
+
+    def _disable_device(self, device, user: Optional[str], reason: str = ""):
+        device_name = self._device_name(device)
+        device_token = self._device_token(device)
+        if device_name:
+            frappe.db.set_value("User Device", device_name, "enabled", 0)
+            frappe.db.commit()
+            invalidate_user_devices_cache(user or self._device_user(device))
+        frappe.log_error(
+            title="User Device disabled",
+            message=f"Device {device_token} disabled. Reason: {reason}",
+            reference_doctype="User Device",
+            reference_name=device_name,
+        )
+
+    @staticmethod
+    def _device_token(device: Union[Dict[str, Any], Any]) -> Optional[str]:
+        if isinstance(device, dict):
+            return device.get("device_token")
+        return getattr(device, "device_token", None)
+
+    @staticmethod
+    def _device_name(device: Union[Dict[str, Any], Any]) -> Optional[str]:
+        if isinstance(device, dict):
+            return device.get("name")
+        return getattr(device, "name", None)
+
+    @staticmethod
+    def _device_user(device: Union[Dict[str, Any], Any]) -> Optional[str]:
+        if isinstance(device, dict):
+            return device.get("user")
+        return getattr(device, "user", None)
 
 
-def user_id(doc):
-    user_email = doc.for_user
-    user_device_token = get_user_devices(user_email)
-    return user_device_token
+@frappe.whitelist()
+def send_notification(
+    notification, event=None, send_async: Optional[bool] = None, devices=None
+):
+    """
+    Public entrypoint to send a Notification Log.
+    - `notification` can be a Notification Log doc or name.
+    - `send_async` overrides the doc's send_now flag when provided.
+    - `devices` can be a list of device dicts or tokens to target specific devices.
+    """
+    notification_doc = (
+        frappe.get_doc("Notification Log", notification)
+        if isinstance(notification, str)
+        else notification
+    )
+    service = FCMNotificationService()
+    service.dispatch(
+        notification_doc, event=event, send_async=send_async, devices=devices
+    )
+
+
+def _queue_send_device(
+    device,
+    data: Dict[str, str],
+    title: str,
+    body: str,
+    notification_name: Optional[str] = None,
+    notification_type: Optional[str] = None,
+    user: Optional[str] = None,
+):
+    """Worker-safe wrapper to send messages from the enqueue queue."""
+    service = FCMNotificationService()
+    if not service.allowed_notification_type(notification_type):
+        return
+    service.safe_send_to_device(
+        device,
+        data=data,
+        title=title,
+        body=body,
+        notification_name=notification_name,
+        notification_type=notification_type,
+        user=user,
+    )
+
+
+def convert_message(message):
+    """Strip HTML tags from message/title before sending."""
+    CLEANR = re.compile("<.*?>")
+    cleanmessage = re.sub(CLEANR, "", message) if message else ""
+    return cleanmessage
+
+
+def stringify_data(data: Dict[str, Any]) -> Dict[str, str]:
+    """Coerce payload values into strings for FCM data payloads."""
+    result = {}
+    for key, value in data.items():
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            result[key] = json.dumps(value)
+        else:
+            result[key] = frappe.as_unicode(value)
+    return result
 
 
 def get_user_devices(user):
@@ -38,126 +369,8 @@ def get_user_devices(user):
         limit_page_length=5,
     )
 
-    frappe.cache().set_value(
-        cache_key, devices, expires_in_sec=3600
-    )  # Cache for 1 hour
+    frappe.cache().set_value(cache_key, devices, expires_in_sec=3600)
     return devices
-
-
-@frappe.whitelist()
-def send_notification(doc, event=None):
-    if event != None:
-        device_tokens = user_id(doc)
-        send_now = doc.send_now or False
-        for dvs in device_tokens:
-            if not send_now:
-                enqueue(
-                    process_notification,
-                    queue="notifications_queue",
-                    device=dvs,
-                    notification=doc,
-                )
-            else:
-                process_notification(dvs, doc)
-
-
-def convert_message(message):
-    CLEANR = re.compile("<.*?>")
-    cleanmessage = re.sub(CLEANR, "", message)
-    # cleantitle = re.sub(CLEANR, "",title)
-    return cleanmessage
-
-
-def process_notification(device, notification):
-    initialize_firebase()
-    message = notification.email_content
-    title = notification.subject
-    if message:
-        message = convert_message(message)
-    if title:
-        title = convert_message(title)
-    data = {
-        "doctype": notification.document_type,
-        "docname": notification.document_name,
-        "title": title,
-        "message": message,
-    }
-    # Get customer address lat, long and send it to the agent via notification if the doctype is SalesOrder
-    if notification.document_type == "Sales Order":
-        customer_address = frappe.get_cached_value(
-            "Sales Order", notification.document_name, "customer_address"
-        )
-        address = frappe.get_cached_doc("Address", customer_address)
-        if address and address.custom_latitude:
-            data["latitude"] = address.custom_latitude
-            data["longitude"] = address.custom_longitude
-        send_fcm_message(device, title, message, data)
-
-
-def send_fcm_message(device, title, message, data, is_alert=True):
-    initialize_firebase()
-    """Send FCM notification to a specific device"""
-    try:
-        messaging.send(
-            message=messaging.Message(
-                data=data,
-                token=device.device_token,
-                android=messaging.AndroidConfig(
-                    priority="high",
-                    notification=messaging.AndroidNotification(
-                        title=title,
-                        body=message,
-                        channel_id="high_importance_channel",
-                    ),
-                    fcm_options=messaging.AndroidFCMOptions(
-                        analytics_label="assign_agent_to_order",
-                    ),
-                ),
-                apns=messaging.APNSConfig(
-                    payload=messaging.APNSPayload(
-                        aps=messaging.Aps(
-                            alert=(
-                                messaging.ApsAlert(title=title, body=message)
-                                if is_alert
-                                else None
-                            ),
-                            sound=messaging.CriticalSound(),
-                            custom_data=data,
-                        ),
-                    )
-                ),
-                fcm_options=messaging.FCMOptions(
-                    analytics_label="assign_agent_to_order",
-                ),
-            ),
-        )
-    except messaging.UnregisteredError as e:
-        frappe.db.set_value("User Device", device.name, "enabled", 0)
-        # Invalidate cache for this device
-        invalidate_user_devices_cache(device.user)
-        frappe.db.commit()
-        frappe.log_error(
-            title="Unregistered Device",
-            message=f"Device {device.device_token} is unregistered. Error: {str(e)}",
-            reference_doctype="User Device",
-            reference_name=device.name,
-        )
-        return device.device_token
-    except messaging.SenderIdMismatchError:
-        frappe.db.set_value("User Device", device.name, "enabled", 0)
-        # Invalidate cache for this device
-        invalidate_user_devices_cache(device.user)
-        frappe.db.commit()
-        frappe.log_error(
-            title="Sender ID Mismatch",
-            message=f"Device {device.device_token} is mismatched: {str(e)}",
-            reference_doctype="User Device",
-            reference_name=device.name,
-        )
-        return device.device_token
-    except Exception as e:
-        frappe.error_log(f"Error sending notification: {e}")
-        return None
 
 
 def populate_payload_data(doc, event):

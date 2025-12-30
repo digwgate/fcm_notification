@@ -24,6 +24,8 @@ def handle_user_device(device_data: dict) -> dict:
         user_device.save(ignore_permissions=True)
         frappe.db.commit()
         return user_device
+    if "user" not in device_data.keys():
+        device_data["user"] = frappe.session.user
     user_device = frappe.new_doc("User Device")
     user_device.update(device_data)
     user_device.save(ignore_permissions=True)

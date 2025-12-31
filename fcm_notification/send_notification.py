@@ -377,7 +377,12 @@ def populate_payload_data(doc, event):
     """Populate Notification Log payload using Notification Payload mapping."""
     if not (doc.document_type and doc.document_name):
         return
-
+    payload = {
+        "doctype": doc.document_type,
+        "docname": doc.document_name,
+        "route": f"/alerts/alert/{doc.name}",
+    }
+    doc.payload = payload
     payload_doc_name = frappe.db.get_value(
         "Notification Payload",
         filters={"for_doctype": doc.document_type, "disabled": 0},
@@ -391,16 +396,10 @@ def populate_payload_data(doc, event):
 
     source_doc = frappe.get_cached_doc(doc.document_type, doc.document_name)
 
-    payload = {
-        "doctype": doc.document_type,
-        "docname": doc.document_name,
-    }
-
     for row in mapping_doc.fields_mapper:
         if not (row.key and row.doc_field):
             continue
         payload[row.key] = source_doc.get(row.doc_field)
-
     doc.payload = payload
 
 

@@ -105,8 +105,8 @@ app_license = "MIT"
 
 doc_events = {
     "Notification Log": {
-        "after_insert": "fcm_notification.send_notification.send_notification",
         "before_save": "fcm_notification.send_notification.populate_payload_data",
+        "after_insert": "fcm_notification.send_notification.send_notification",
     },
     "User Device": {
         "on_update": "fcm_notification.send_notification.invalidate_user_devices_cache_hooks",

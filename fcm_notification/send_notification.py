@@ -364,9 +364,10 @@ def get_user_devices(user):
     devices = frappe.get_all(
         "User Device",
         filters={"user": user, "enabled": True},
-        fields=["Distinct(device_token) as device_token", "name", "user"],
+        fields=["device_token", "name", "user"],
         order_by="creation desc",
         limit_page_length=5,
+        distinct=True,
     )
 
     frappe.cache().set_value(cache_key, devices, expires_in_sec=3600)

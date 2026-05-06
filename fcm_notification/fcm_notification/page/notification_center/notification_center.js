@@ -233,15 +233,20 @@ class NotificationCenterPage {
 			fieldname: "doctype",
 			label: __("DocType"),
 			options: "DocType",
+			get_query: () => ({
+				query: `${this.method}.get_reference_doctype_query`,
+				translate_values: false,
+			}),
 			change: () => this.on_doctype_change(),
 		});
 		this.fields.docname = this.make_field("docname", {
 			fieldtype: "Link",
 			fieldname: "docname",
 			label: __("Document"),
-			options: "DocType",
+			options: "",
 			change: () => this.on_docname_change(),
 		});
+		this.toggle_reference_details(false);
 	}
 
 	make_field(fieldname, df) {
@@ -288,9 +293,10 @@ class NotificationCenterPage {
 
 	on_doctype_change() {
 		const doctype = this.fields.doctype.get_value();
-		this.fields.docname.df.options = doctype || "DocType";
+		this.fields.docname.df.options = doctype || "";
 		this.fields.docname.set_value("");
 		this.fields.docname.refresh();
+		this.toggle_reference_details(Boolean(doctype));
 		this.clear_preview();
 		this.load_reference_fields();
 	}
@@ -404,10 +410,12 @@ class NotificationCenterPage {
 		const doctype = this.fields.doctype.get_value();
 		if (!doctype) {
 			this.reference_fields = null;
+			this.toggle_reference_details(false);
 			this.render_reference_fields(null);
 			return;
 		}
 
+		this.toggle_reference_details(true);
 		const result = await frappe.xcall(`${this.method}.get_reference_fields`, {
 			doctype,
 			docname: this.fields.docname.get_value(),
@@ -422,9 +430,7 @@ class NotificationCenterPage {
 		this.$body.find(".reference-status").text(__("{0} fields", [fields.length]));
 
 		if (!result?.doctype) {
-			this.$body
-				.find(".notification-center-reference-list")
-				.html(`<div class="notification-center-empty">${__("No reference DocType selected")}</div>`);
+			this.$body.find(".notification-center-reference-list").empty();
 			return;
 		}
 
@@ -469,6 +475,14 @@ class NotificationCenterPage {
 			})
 			.join("");
 		this.$body.find(".notification-center-reference-list").html(html);
+	}
+
+	toggle_reference_details(show) {
+		const should_show = Boolean(show);
+		this.$body.find('[data-fieldname="docname"]').toggle(should_show);
+		this.$body.find(".notification-center-reference-toolbar").toggle(should_show);
+		this.$body.find(".notification-center-reference-list").toggle(should_show);
+		this.$body.find(".reference-fields").toggleClass("single-column", !should_show);
 	}
 
 	set_reference_target(target) {

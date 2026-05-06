@@ -23,7 +23,14 @@
   "ios_sound_name",
   "ios_sound_critical",
   "ios_sound_volume",
-  "column_break_mwwi"
+  "column_break_mwwi",
+  "notification_center_tab",
+  "notification_center_reference_section",
+  "notification_center_doctypes",
+  "notification_center_targeting_column",
+  "notification_center_roles",
+  "notification_center_blocked_words_section",
+  "notification_center_blocked_patterns"
  ],
  "fields": [
   {
@@ -134,11 +141,49 @@
   {
    "fieldname": "column_break_mwwi",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "notification_center_tab",
+   "fieldtype": "Tab Break",
+   "label": "Notification Center"
+  },
+  {
+   "fieldname": "notification_center_reference_section",
+   "fieldtype": "Section Break",
+   "label": "Reference"
+  },
+  {
+   "fieldname": "notification_center_doctypes",
+   "fieldtype": "Table",
+   "label": "Applicable DocTypes",
+   "options": "Notification Center DocType"
+  },
+  {
+   "fieldname": "notification_center_targeting_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "notification_center_roles",
+   "fieldtype": "Table",
+   "label": "Applicable Roles",
+   "options": "Notification Center Role"
+  },
+  {
+   "fieldname": "notification_center_blocked_words_section",
+   "fieldtype": "Section Break",
+   "label": "Blocked Words"
+  },
+  {
+   "description": "Sending from Notification Center is blocked when the rendered title or body matches any row.",
+   "fieldname": "notification_center_blocked_patterns",
+   "fieldtype": "Table",
+   "label": "Blocked Words and Patterns",
+   "options": "Notification Center Blocked Pattern"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2025-12-25 23:26:25.046755",
+ "modified": "2026-05-06 15:50:00.000000",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "FCM Notification Settings",

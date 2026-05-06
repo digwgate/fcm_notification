@@ -22,8 +22,35 @@ def install_throw(monkeypatch):
     monkeypatch.setattr(notification_center.frappe, "throw", throw)
 
 
+def install_settings(
+    monkeypatch,
+    roles=None,
+    doctypes=None,
+    blocked_patterns=None,
+):
+    settings = SimpleNamespace(
+        notification_center_roles=[
+            SimpleNamespace(role=role) for role in (roles or ["Sales User", "System Manager"])
+        ],
+        notification_center_doctypes=[
+            SimpleNamespace(reference_doctype=doctype)
+            for doctype in (doctypes or ["Task", "User"])
+        ],
+        notification_center_blocked_patterns=[
+            SimpleNamespace(**pattern) for pattern in (blocked_patterns or [])
+        ],
+    )
+    monkeypatch.setattr(
+        notification_center.frappe,
+        "get_single",
+        lambda doctype: settings,
+        raising=False,
+    )
+
+
 def test_get_recipients_unions_targets_and_filters_by_enabled_platform(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch, roles=["Sales User"])
 
     def get_all(doctype, filters=None, fields=None, **kwargs):
         if doctype == "User Device":
@@ -154,6 +181,7 @@ def test_get_enabled_user_options_excludes_users_without_enabled_devices(monkeyp
 
 def test_get_role_options_excludes_guest_and_sets_blank_description(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch, roles=["System Manager"])
 
     monkeypatch.setattr(
         notification_center.frappe,
@@ -170,6 +198,28 @@ def test_get_role_options_excludes_guest_and_sets_blank_description(monkeypatch)
         {
             "value": "System Manager",
             "label": "System Manager",
+            "description": "",
+        }
+    ]
+
+
+def test_get_role_options_uses_notification_center_settings(monkeypatch):
+    install_permissions(monkeypatch)
+    install_settings(monkeypatch, roles=["Sales User"])
+
+    def get_all(doctype, filters=None, **kwargs):
+        assert doctype == "Role"
+        assert ["Role", "name", "in", ["Sales User"]] in filters
+        return [{"name": "Sales User"}]
+
+    monkeypatch.setattr(notification_center.frappe, "get_all", get_all)
+
+    result = notification_center.get_role_options()
+
+    assert result == [
+        {
+            "value": "Sales User",
+            "label": "Sales User",
             "description": "",
         }
     ]
@@ -197,6 +247,7 @@ def test_get_user_group_options_sets_blank_description(monkeypatch):
 
 def test_guest_role_is_ignored_when_resolving_recipients(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch, roles=["System Manager"])
 
     def get_all(doctype, filters=None, fields=None, **kwargs):
         if doctype == "User Device":
@@ -243,6 +294,7 @@ def test_guest_role_is_ignored_when_resolving_recipients(monkeypatch):
 
 def test_get_reference_fields_returns_jinja_snippets_with_document_values(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch, doctypes=["Task"])
 
     class FakeDoc:
         name = "TASK-1"
@@ -313,6 +365,7 @@ def test_get_reference_fields_returns_jinja_snippets_with_document_values(monkey
 
 def test_get_reference_fields_falls_back_when_cached_doc_as_dict_fails(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch, doctypes=["User"])
 
     class FakeDoc:
         name = "Administrator"
@@ -358,8 +411,54 @@ def test_get_reference_fields_falls_back_when_cached_doc_as_dict_fails(monkeypat
     } in result["fields"]
 
 
+def test_get_reference_fields_rejects_doctype_not_configured(monkeypatch):
+    install_permissions(monkeypatch)
+    install_throw(monkeypatch)
+    install_settings(monkeypatch, doctypes=["Task"])
+
+    with pytest.raises(ValueError, match="not enabled for Notification Center references"):
+        notification_center.get_reference_fields("User")
+
+
+def test_get_reference_doctype_options_returns_configured_doctypes(monkeypatch):
+    install_permissions(monkeypatch)
+    install_settings(monkeypatch, doctypes=["Sales Order", "Task"])
+
+    def get_all(doctype, filters=None, **kwargs):
+        assert doctype == "DocType"
+        assert ["DocType", "name", "in", ["Sales Order", "Task"]] in filters
+        return [{"name": "Sales Order"}, {"name": "Task"}]
+
+    monkeypatch.setattr(notification_center.frappe, "get_all", get_all)
+
+    result = notification_center.get_reference_doctype_options()
+
+    assert result == [
+        {
+            "value": "Sales Order",
+            "label": "Sales Order",
+            "description": "",
+        },
+        {
+            "value": "Task",
+            "label": "Task",
+            "description": "",
+        },
+    ]
+
+
+def test_collect_recipients_rejects_unconfigured_role(monkeypatch):
+    install_permissions(monkeypatch)
+    install_throw(monkeypatch)
+    install_settings(monkeypatch, roles=["Sales User"])
+
+    with pytest.raises(ValueError, match="not enabled for Notification Center targeting"):
+        notification_center.get_recipients(roles=["Purchase User"])
+
+
 def test_send_notification_center_uses_filtered_devices_for_direct_delivery(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch)
     sent = []
 
     monkeypatch.setattr(
@@ -446,6 +545,7 @@ def test_send_notification_center_uses_filtered_devices_for_direct_delivery(monk
 
 def test_get_message_template_loads_email_template_content(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch)
 
     monkeypatch.setattr(
         notification_center.frappe,
@@ -468,6 +568,7 @@ def test_get_message_template_loads_email_template_content(monkeypatch):
 
 def test_preview_notification_renders_jinja_with_document_context(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch)
 
     class FakeDoc:
         name = "TASK-1"
@@ -501,8 +602,23 @@ def test_preview_notification_renders_jinja_with_document_context(monkeypatch):
     assert result == {"title": "Task TASK-1", "body": "TASK-1 is Open"}
 
 
+def test_preview_notification_rejects_unconfigured_reference_doctype(monkeypatch):
+    install_permissions(monkeypatch)
+    install_throw(monkeypatch)
+    install_settings(monkeypatch, doctypes=["Task"])
+
+    with pytest.raises(ValueError, match="not enabled for Notification Center references"):
+        notification_center.preview_notification(
+            title="User {{ doc.name }}",
+            body="Blocked reference",
+            doctype="User",
+            docname="Administrator",
+        )
+
+
 def test_send_notification_center_creates_logs_and_dispatches_filtered_devices(monkeypatch):
     install_permissions(monkeypatch)
+    install_settings(monkeypatch)
     inserted = []
     dispatched = []
 
@@ -628,9 +744,72 @@ def test_send_notification_center_creates_logs_and_dispatches_filtered_devices(m
     assert result["notification_logs"] == ["LOG-1"]
 
 
+def test_send_notification_center_blocks_configured_pattern_after_render(monkeypatch):
+    install_permissions(monkeypatch)
+    install_throw(monkeypatch)
+    install_settings(
+        monkeypatch,
+        blocked_patterns=[
+            {"pattern": "blocked phrase", "match_type": "Contains", "case_sensitive": 0}
+        ],
+    )
+    sent = []
+
+    monkeypatch.setattr(
+        notification_center,
+        "_collect_recipients",
+        lambda *args, **kwargs: {
+            "users": [
+                {
+                    "user": "target@example.com",
+                    "full_name": "Target User",
+                    "email": "target@example.com",
+                    "enabled_devices": 1,
+                    "platforms": ["Android"],
+                }
+            ],
+            "user_count": 1,
+            "device_count": 1,
+            "platform_counts": {"Android": 1},
+            "devices_by_user": {"target@example.com": []},
+            "devices": [
+                {
+                    "name": "device-1",
+                    "user": "target@example.com",
+                    "platform": "Android",
+                    "device_token": "android-token",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        notification_center,
+        "_render_notification_content",
+        lambda title, body, doctype=None, docname=None: (
+            "Rendered Title",
+            "Rendered body with Blocked Phrase",
+        ),
+    )
+    monkeypatch.setattr(
+        notification_center,
+        "send_direct_notification",
+        lambda **kwargs: sent.append(kwargs),
+    )
+
+    with pytest.raises(ValueError, match="blocked word or pattern"):
+        notification_center.send_notification_center(
+            users=["target@example.com"],
+            title="Title",
+            body="Body",
+        )
+
+    assert sent == []
+
+
 def test_send_notification_center_requires_a_target(monkeypatch):
     install_permissions(monkeypatch)
     install_throw(monkeypatch)
+    install_settings(monkeypatch)
 
     with pytest.raises(ValueError, match="Select at least one"):
         notification_center.send_notification_center(title="Title", body="Body")

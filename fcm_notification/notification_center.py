@@ -1,4 +1,5 @@
 import json
+import re
 from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -11,7 +12,8 @@ from fcm_notification.send_notification import (
 
 PLATFORMS = {"android": "Android", "ios": "IOS"}
 DEFAULT_NOTIFICATION_TYPE = "Alert"
-EXCLUDED_ROLES = {"Guest","Administrator"}
+SETTINGS_DOCTYPE = "FCM Notification Settings"
+EXCLUDED_ROLES = {"Guest", "Administrator"}
 REFERENCE_FIELD_TYPES = {
     "Currency",
     "Int",
@@ -58,6 +60,73 @@ def _get_session_user() -> str:
         return "Administrator"
 
 
+def _get_notification_center_settings():
+    try:
+        return frappe.get_single(SETTINGS_DOCTYPE)
+    except Exception:
+        return frappe._dict()
+
+
+def _get_row_value(row, fieldname):
+    if isinstance(row, dict):
+        return row.get(fieldname)
+    if hasattr(row, "get"):
+        try:
+            return row.get(fieldname)
+        except Exception:
+            pass
+    return getattr(row, fieldname, None)
+
+
+def _get_settings_table(fieldname) -> List[Any]:
+    settings = _get_notification_center_settings()
+    return getattr(settings, fieldname, None) or []
+
+
+def _get_table_values(table_fieldname, value_fieldname) -> List[str]:
+    values = []
+    for row in _get_settings_table(table_fieldname):
+        value = _get_row_value(row, value_fieldname)
+        if value:
+            values.append(frappe.as_unicode(value).strip())
+    return [value for value in values if value]
+
+
+def _get_applicable_roles() -> set[str]:
+    return {
+        role
+        for role in _get_table_values("notification_center_roles", "role")
+        if role not in EXCLUDED_ROLES
+    }
+
+
+def _get_applicable_reference_doctypes() -> set[str]:
+    return set(
+        _get_table_values("notification_center_doctypes", "reference_doctype")
+    )
+
+
+def _get_blocked_patterns() -> List[Dict[str, Any]]:
+    patterns = []
+    for row in _get_settings_table("notification_center_blocked_patterns"):
+        pattern = _get_row_value(row, "pattern")
+        if not pattern:
+            continue
+        pattern = frappe.as_unicode(pattern).strip()
+        if not pattern:
+            continue
+        patterns.append(
+            {
+                "pattern": pattern,
+                "match_type": frappe.as_unicode(
+                    _get_row_value(row, "match_type") or "Contains"
+                ).strip(),
+                "case_sensitive": _coerce_bool(_get_row_value(row, "case_sensitive")),
+            }
+        )
+    return patterns
+
+
 def _normalize_list(value) -> List[str]:
     if value is None:
         return []
@@ -97,8 +166,16 @@ def _normalize_platform(platform: Optional[str]) -> Optional[str]:
     return PLATFORMS.get(normalized.lower(), normalized)
 
 
-def _normalize_roles(roles) -> List[str]:
-    return [role for role in _normalize_list(roles) if role not in EXCLUDED_ROLES]
+def _normalize_roles(roles, validate=False) -> List[str]:
+    roles = [role for role in _normalize_list(roles) if role not in EXCLUDED_ROLES]
+    applicable_roles = _get_applicable_roles()
+    invalid_roles = sorted(set(roles) - applicable_roles)
+    if validate and invalid_roles:
+        frappe.throw(
+            "Role is not enabled for Notification Center targeting: "
+            + ", ".join(invalid_roles)
+        )
+    return [role for role in roles if role in applicable_roles]
 
 
 def _target_selected(roles, user_groups, users, platform) -> bool:
@@ -201,6 +278,7 @@ def _collect_recipients(
     users=None,
     platform=None,
 ) -> Dict[str, Any]:
+    roles = _normalize_roles(roles, validate=True)
     if not _target_selected(roles, user_groups, users, platform):
         frappe.throw("Select at least one role, user group, user, or platform.")
 
@@ -312,7 +390,10 @@ def get_enabled_user_options(txt="", platform=None, limit=20):
 @frappe.whitelist()
 def get_role_options(txt="", limit=20):
     _require_system_manager()
-    filters = [["Role", "name", "not in", sorted(EXCLUDED_ROLES)]]
+    applicable_roles = sorted(_get_applicable_roles())
+    if not applicable_roles:
+        return []
+    filters = [["Role", "name", "in", applicable_roles]]
     if txt:
         filters.append(["Role", "name", "like", f"%{txt}%"])
     rows = frappe.get_all(
@@ -379,11 +460,64 @@ def _is_reference_field(df) -> bool:
     return fieldtype in REFERENCE_FIELD_TYPES
 
 
+def _validate_reference_doctype(doctype):
+    if not doctype:
+        return
+    applicable_doctypes = _get_applicable_reference_doctypes()
+    if doctype not in applicable_doctypes:
+        frappe.throw(
+            f"{doctype} is not enabled for Notification Center references."
+        )
+
+
+def _get_reference_doctype_rows(txt="", limit=20, start=0):
+    applicable_doctypes = sorted(_get_applicable_reference_doctypes())
+    if not applicable_doctypes:
+        return []
+
+    filters = [["DocType", "name", "in", applicable_doctypes]]
+    if txt:
+        filters.append(["DocType", "name", "like", f"%{txt}%"])
+
+    return frappe.get_all(
+        "DocType",
+        filters=filters,
+        fields=["name"],
+        order_by="name asc",
+        limit_start=int(start or 0),
+        limit_page_length=int(limit or 20),
+    )
+
+
+@frappe.whitelist()
+def get_reference_doctype_options(txt="", limit=20):
+    _require_system_manager()
+    return [
+        {"value": row["name"], "label": row["name"], "description": ""}
+        for row in _get_reference_doctype_rows(txt=txt, limit=limit)
+    ]
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_reference_doctype_query(doctype, txt, searchfield, start, page_len, filters):
+    _require_system_manager()
+    return [
+        (row["name"],)
+        for row in _get_reference_doctype_rows(
+            txt=txt,
+            limit=page_len,
+            start=start,
+        )
+    ]
+
+
 @frappe.whitelist()
 def get_reference_fields(doctype=None, docname=None, txt="", limit=50):
     _require_system_manager()
     if not doctype:
         return {"doctype": "", "docname": "", "fields": []}
+    _validate_reference_doctype(doctype)
 
     values = {}
     if docname:
@@ -457,6 +591,7 @@ def _get_document_context(doctype=None, docname=None) -> Dict[str, Any]:
         return {}
     if not (doctype and docname):
         frappe.throw("Select both Reference DocType and Reference Document.")
+    _validate_reference_doctype(doctype)
 
     doc = frappe.get_cached_doc(doctype, docname)
     if not frappe.has_permission(doctype, "read", doc):
@@ -475,6 +610,33 @@ def _render_template(value: Optional[str], context: Dict[str, Any]) -> str:
 def _render_notification_content(title, body, doctype=None, docname=None):
     context = _get_document_context(doctype=doctype, docname=docname)
     return _render_template(title, context), _render_template(body, context)
+
+
+def _blocked_pattern_matches(content: str, blocked_pattern: Dict[str, Any]) -> bool:
+    pattern = blocked_pattern["pattern"]
+    content = frappe.as_unicode(content or "")
+    if blocked_pattern["match_type"].lower() == "regex":
+        flags = 0 if blocked_pattern["case_sensitive"] else re.IGNORECASE
+        try:
+            return re.search(pattern, content, flags=flags) is not None
+        except re.error:
+            frappe.throw(f"Invalid blocked word regex pattern: {pattern}")
+
+    if blocked_pattern["case_sensitive"]:
+        return pattern in content
+    return pattern.casefold() in content.casefold()
+
+
+def _validate_notification_content(title, body):
+    for blocked_pattern in _get_blocked_patterns():
+        for field_label, content in (("title", title), ("body", body)):
+            if _blocked_pattern_matches(content, blocked_pattern):
+                frappe.throw(
+                    "Notification "
+                    + field_label
+                    + " contains a blocked word or pattern: "
+                    + blocked_pattern["pattern"]
+                )
 
 
 @frappe.whitelist()
@@ -582,6 +744,7 @@ def send_notification_center(
         doctype=doctype,
         docname=docname,
     )
+    _validate_notification_content(rendered_title, rendered_body)
 
     if isinstance(data, str):
         data = json.loads(data) if data else {}

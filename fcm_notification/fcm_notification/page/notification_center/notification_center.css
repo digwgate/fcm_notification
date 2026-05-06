@@ -1,0 +1,275 @@
+.notification-center-page {
+	padding: var(--padding-md);
+}
+
+.notification-center-page .notification-center-grid {
+	display: grid;
+	grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.1fr);
+	gap: var(--margin-md);
+	align-items: start;
+}
+
+.notification-center-page .notification-center-stack {
+	display: grid;
+	gap: var(--margin-md);
+}
+
+.notification-center-page .notification-center-panel {
+	background: var(--card-bg);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	padding: var(--padding-md);
+}
+
+.notification-center-page .notification-center-panel-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--margin-sm);
+	margin-bottom: var(--margin-sm);
+}
+
+.notification-center-page .notification-center-panel-title {
+	font-size: var(--text-lg);
+	font-weight: 600;
+	color: var(--heading-color);
+	margin: 0;
+}
+
+.notification-center-page .notification-center-fields {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--margin-sm) var(--margin-md);
+}
+
+.notification-center-page .notification-center-fields.single-column {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.notification-center-page .notification-center-field.full-width {
+	grid-column: 1 / -1;
+}
+
+.notification-center-page .notification-center-reference-helper.full-width {
+	grid-column: 1 / -1;
+}
+
+.notification-center-page .notification-center-reference-helper {
+	border-top: 1px solid var(--border-color);
+	margin-top: var(--margin-xs);
+	padding-top: var(--padding-md);
+}
+
+.notification-center-page .notification-center-reference-header,
+.notification-center-page .notification-center-reference-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--margin-sm);
+	margin-bottom: var(--margin-sm);
+}
+
+.notification-center-page .notification-center-reference-title {
+	font-size: var(--text-base);
+	font-weight: 600;
+	color: var(--heading-color);
+	margin: 0;
+}
+
+.notification-center-page .reference-fields {
+	margin-bottom: var(--margin-sm);
+}
+
+.notification-center-page .notification-center-reference-toolbar .reference-filter {
+	max-width: 260px;
+}
+
+.notification-center-page .reference-target-btn.active {
+	background: var(--control-bg);
+	border-color: var(--primary);
+	color: var(--primary);
+}
+
+.notification-center-page .notification-center-reference-list {
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	max-height: 280px;
+	overflow: auto;
+}
+
+.notification-center-page .notification-center-reference-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: var(--margin-sm);
+	align-items: center;
+	padding: var(--padding-sm);
+	border-bottom: 1px solid var(--border-color);
+	cursor: pointer;
+}
+
+.notification-center-page .notification-center-reference-row:last-child {
+	border-bottom: 0;
+}
+
+.notification-center-page .notification-center-reference-row:hover {
+	background: var(--subtle-fg);
+}
+
+.notification-center-page .notification-center-reference-main {
+	min-width: 0;
+}
+
+.notification-center-page .notification-center-reference-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 600;
+	color: var(--heading-color);
+}
+
+.notification-center-page .notification-center-reference-expression {
+	color: var(--text-color);
+	font-family: var(--font-family-monospace);
+	font-size: var(--text-sm);
+	margin-top: 2px;
+	overflow-wrap: anywhere;
+}
+
+.notification-center-page .notification-center-reference-fieldname,
+.notification-center-page .notification-center-reference-preview {
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.notification-center-page .notification-center-reference-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.notification-center-page .notification-center-summary {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: var(--margin-sm);
+	margin: var(--margin-md) 0;
+}
+
+.notification-center-page .notification-center-stat {
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	padding: var(--padding-sm);
+	background: var(--subtle-fg);
+}
+
+.notification-center-page .notification-center-stat-value {
+	font-size: var(--text-xl);
+	font-weight: 700;
+	color: var(--heading-color);
+	line-height: 1.2;
+}
+
+.notification-center-page .notification-center-stat-label {
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+	margin-top: 2px;
+}
+
+.notification-center-page .notification-center-recipient-list {
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.notification-center-page .notification-center-recipient-row {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: var(--margin-sm);
+	padding: var(--padding-sm);
+	border-bottom: 1px solid var(--border-color);
+	align-items: center;
+}
+
+.notification-center-page .notification-center-recipient-row:last-child {
+	border-bottom: 0;
+}
+
+.notification-center-page .notification-center-recipient-name {
+	font-weight: 600;
+	color: var(--heading-color);
+	overflow-wrap: anywhere;
+}
+
+.notification-center-page .notification-center-recipient-email {
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.notification-center-page .notification-center-platforms {
+	display: flex;
+	gap: 4px;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+}
+
+.notification-center-page .notification-center-preview {
+	min-height: 160px;
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	padding: var(--padding-md);
+	background: var(--subtle-fg);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.notification-center-page .notification-center-preview-title {
+	font-weight: 700;
+	color: var(--heading-color);
+	margin-bottom: var(--margin-sm);
+}
+
+.notification-center-page .notification-center-preview-body {
+	color: var(--text-color);
+}
+
+.notification-center-page .notification-center-empty {
+	color: var(--text-muted);
+	text-align: center;
+	padding: var(--padding-lg);
+}
+
+.notification-center-page .notification-center-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--margin-sm);
+	margin-top: var(--margin-md);
+}
+
+@media (max-width: 991px) {
+	.notification-center-page .notification-center-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.notification-center-page .notification-center-fields {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.notification-center-page .notification-center-reference-toolbar,
+	.notification-center-page .notification-center-reference-row {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.notification-center-page .notification-center-reference-toolbar {
+		align-items: stretch;
+		flex-direction: column;
+	}
+
+	.notification-center-page .notification-center-reference-toolbar .reference-filter {
+		max-width: none;
+	}
+
+	.notification-center-page .notification-center-reference-actions {
+		justify-content: flex-start;
+	}
+}

@@ -422,7 +422,11 @@ class FCMNotificationService:
 
 @frappe.whitelist()
 def send_notification(
-    notification, event=None, send_async: Optional[bool] = None, devices=None
+    notification,
+    event=None,
+    send_async: Optional[bool] = None,
+    devices=None,
+    ignore_skip_flag: bool = False,
 ):
     """
     Public entrypoint to send a Notification Log.
@@ -430,6 +434,12 @@ def send_notification(
     - `send_async` overrides the doc's send_now flag when provided.
     - `devices` can be a list of device dicts or tokens to target specific devices.
     """
+    should_skip = getattr(notification, "skip_fcm_send", False) or getattr(
+        getattr(notification, "flags", None), "skip_fcm_send", False
+    )
+    if should_skip and not ignore_skip_flag:
+        return
+
     notification_doc = (
         frappe.get_doc("Notification Log", notification)
         if isinstance(notification, str)

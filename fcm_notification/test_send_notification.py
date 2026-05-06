@@ -161,3 +161,57 @@ def test_send_direct_notification_honors_notification_type_settings(monkeypatch)
     )
 
     assert sent == []
+
+
+def test_send_notification_skips_documents_marked_for_manual_dispatch(monkeypatch):
+    install_settings(monkeypatch)
+    dispatched = []
+
+    monkeypatch.setattr(
+        send_module.FCMNotificationService,
+        "dispatch",
+        lambda self, notification, **kwargs: dispatched.append(notification),
+    )
+
+    send_module.send_notification(
+        SimpleNamespace(name="LOG-1", flags=SimpleNamespace(skip_fcm_send=True))
+    )
+
+    assert dispatched == []
+
+
+def test_send_notification_can_force_manual_dispatch_for_skipped_documents(monkeypatch):
+    install_settings(monkeypatch)
+    dispatched = []
+
+    monkeypatch.setattr(
+        send_module.FCMNotificationService,
+        "dispatch",
+        lambda self, notification, **kwargs: dispatched.append(
+            {"notification": notification, "kwargs": kwargs}
+        ),
+    )
+
+    notification = SimpleNamespace(
+        name="LOG-1",
+        flags=SimpleNamespace(skip_fcm_send=True),
+    )
+    devices = [{"device_token": "ios-token", "user": "target@example.com"}]
+
+    send_module.send_notification(
+        notification,
+        send_async=False,
+        devices=devices,
+        ignore_skip_flag=True,
+    )
+
+    assert dispatched == [
+        {
+            "notification": notification,
+            "kwargs": {
+                "event": None,
+                "send_async": False,
+                "devices": devices,
+            },
+        }
+    ]

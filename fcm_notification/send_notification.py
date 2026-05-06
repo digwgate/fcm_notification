@@ -9,6 +9,9 @@ import frappe
 from firebase_admin import credentials, messaging
 from frappe import enqueue
 
+DeviceInput = Union[str, Dict[str, Any]]
+DeviceInputList = Optional[Union[DeviceInput, Iterable[DeviceInput]]]
+
 
 class FCMNotificationService:
     """Encapsulates FCM initialization and Notification Log delivery."""
@@ -77,6 +80,30 @@ class FCMNotificationService:
             base.setdefault("message", convert_message(notification.email_content))
 
         return stringify_data(base)
+
+    def build_direct_data_payload(
+        self,
+        title: str,
+        body: str,
+        data: Optional[Dict[str, Any]] = None,
+        doctype: Optional[str] = None,
+        docname: Optional[str] = None,
+        notification_type: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Prepare direct-send data payload without a Notification Log document."""
+        payload = dict(data or {})
+        explicit_payload = {
+            "title": title,
+            "message": body,
+            "doctype": doctype,
+            "docname": docname,
+            "type": notification_type,
+        }
+        for key, value in explicit_payload.items():
+            if value:
+                payload[key] = value
+
+        return stringify_data(payload)
 
     def build_android_config(self, title: str, body: str):
         ttl = (
@@ -234,6 +261,71 @@ class FCMNotificationService:
                     user=getattr(notification, "for_user", None),
                 )
 
+    def dispatch_direct(
+        self,
+        title: str,
+        body: str,
+        users: Optional[Union[str, Iterable[str]]] = None,
+        devices: DeviceInputList = None,
+        data: Optional[Dict[str, Any]] = None,
+        doctype: Optional[str] = None,
+        docname: Optional[str] = None,
+        notification_type: Optional[str] = None,
+        send_async: bool = False,
+    ):
+        """Send a direct FCM notification without a Notification Log document."""
+        user_list = self._normalize_values(users)
+        direct_devices = self._prepare_direct_devices(devices)
+
+        if not user_list and not direct_devices:
+            frappe.throw("Provide users or devices to send a direct FCM notification.")
+
+        if not self.allowed_notification_type(notification_type):
+            return
+
+        device_records: List[Dict[str, Any]] = []
+        for user in user_list:
+            device_records.extend(get_user_devices(user) or [])
+        device_records.extend(direct_devices)
+        device_records = self._deduplicate_devices(device_records)
+
+        if not device_records:
+            return
+
+        title = convert_message(title or "")
+        body = convert_message(body or "")
+        payload = self.build_direct_data_payload(
+            title=title,
+            body=body,
+            data=data,
+            doctype=doctype,
+            docname=docname,
+            notification_type=notification_type,
+        )
+
+        for device in device_records:
+            user = self._device_user(device)
+            if send_async:
+                enqueue(
+                    _queue_send_device,
+                    queue="notifications_queue",
+                    device=device,
+                    data=payload,
+                    title=title,
+                    body=body,
+                    notification_type=notification_type,
+                    user=user,
+                )
+            else:
+                self.safe_send_to_device(
+                    device,
+                    data=payload,
+                    title=title,
+                    body=body,
+                    notification_type=notification_type,
+                    user=user,
+                )
+
     def _prepare_devices(
         self,
         notification,
@@ -254,6 +346,35 @@ class FCMNotificationService:
                     }
                 )
         return prepared
+
+    def _prepare_direct_devices(
+        self,
+        devices: DeviceInputList,
+    ) -> List[Dict[str, Any]]:
+        prepared = []
+        for device in self._normalize_values(devices):
+            if isinstance(device, dict):
+                if not device.get("device_token"):
+                    frappe.throw("Each direct device requires a device_token.")
+                prepared.append(device)
+            else:
+                if not device:
+                    frappe.throw("Each direct device requires a device_token.")
+                prepared.append({"device_token": device})
+        return prepared
+
+    def _deduplicate_devices(
+        self, devices: Iterable[Union[Dict[str, Any], Any]]
+    ) -> List[Dict[str, Any]]:
+        seen = set()
+        deduplicated = []
+        for device in devices:
+            token = self._device_token(device)
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            deduplicated.append(device)
+        return deduplicated
 
     def _disable_device(self, device, user: Optional[str], reason: str = ""):
         device_name = self._device_name(device)
@@ -287,6 +408,17 @@ class FCMNotificationService:
             return device.get("user")
         return getattr(device, "user", None)
 
+    @staticmethod
+    def _normalize_values(value):
+        if value is None:
+            return []
+        if isinstance(value, (str, bytes, dict)):
+            return [value]
+        try:
+            return list(value)
+        except TypeError:
+            return [value]
+
 
 @frappe.whitelist()
 def send_notification(
@@ -306,6 +438,32 @@ def send_notification(
     service = FCMNotificationService()
     service.dispatch(
         notification_doc, event=event, send_async=send_async, devices=devices
+    )
+
+
+def send_direct_notification(
+    title: str,
+    body: str,
+    users: Optional[Union[str, Iterable[str]]] = None,
+    devices: DeviceInputList = None,
+    data: Optional[Dict[str, Any]] = None,
+    doctype: Optional[str] = None,
+    docname: Optional[str] = None,
+    notification_type: Optional[str] = None,
+    enqueue: bool = False,
+):
+    """Python-only entrypoint to send an FCM notification directly."""
+    service = FCMNotificationService()
+    service.dispatch_direct(
+        title=title,
+        body=body,
+        users=users,
+        devices=devices,
+        data=data,
+        doctype=doctype,
+        docname=docname,
+        notification_type=notification_type,
+        send_async=enqueue,
     )
 
 

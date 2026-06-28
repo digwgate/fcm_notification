@@ -215,3 +215,56 @@ def test_send_notification_can_force_manual_dispatch_for_skipped_documents(monke
             },
         }
     ]
+
+
+def test_fit_data_to_fcm_limit_leaves_small_payload_untouched():
+    data = {"doctype": "Qnina Ticket", "docname": "T-1", "message": "short body"}
+    assert send_module.fit_data_to_fcm_limit(data) is data
+
+
+def test_fit_data_to_fcm_limit_trims_oversized_payload_to_budget():
+    big_body = "x" * 8000  # well over the 4 KB ceiling on its own
+    data = {
+        "doctype": "Qnina Ticket",
+        "docname": "T-2",
+        "kind": "ticket_updated",
+        "spa_route": "/dashboard/tickets/T-2",
+        "message": big_body,
+    }
+
+    fitted = send_module.fit_data_to_fcm_limit(data)
+
+    # Whole payload now fits FCM's data budget...
+    assert send_module._fcm_data_size(fitted) <= send_module.FCM_DATA_BYTE_BUDGET
+    # ...routing keys survive intact...
+    assert fitted["doctype"] == "Qnina Ticket"
+    assert fitted["docname"] == "T-2"
+    assert fitted["kind"] == "ticket_updated"
+    assert fitted["spa_route"] == "/dashboard/tickets/T-2"
+    # ...and the big body is the one that got truncated (with an ellipsis marker).
+    assert fitted["message"].endswith(send_module._FCM_ELLIPSIS)
+    assert len(fitted["message"]) < len(big_body)
+
+
+def test_fit_data_to_fcm_limit_preserves_routing_keys_when_blob_injected():
+    data = {
+        "doctype": "Qnina Ticket",
+        "docname": "T-3",
+        "conversation_id": "group_t-3",
+        "blob": "y" * 6000,
+    }
+
+    fitted = send_module.fit_data_to_fcm_limit(data)
+
+    assert send_module._fcm_data_size(fitted) <= send_module.FCM_DATA_BYTE_BUDGET
+    assert fitted["conversation_id"] == "group_t-3"
+    assert send_module._utf8_len(fitted["blob"]) < 6000
+
+
+def test_stringify_data_caps_payload_size():
+    data = {"docname": "T-4", "message": "z" * 9000}
+
+    result = send_module.stringify_data(data)
+
+    assert send_module._fcm_data_size(result) <= send_module.FCM_DATA_BYTE_BUDGET
+    assert result["docname"] == "T-4"

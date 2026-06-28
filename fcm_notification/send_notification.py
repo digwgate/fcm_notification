@@ -508,8 +508,84 @@ def convert_message(message):
     return cleanmessage
 
 
+# Firebase rejects any FCM message whose data payload exceeds 4096 bytes
+# ("Message is too large. The maximum is 4K (4096 bytes)."). Budget below that to
+# leave room for the notification (title/body) envelope FCM adds on top of the data.
+# ponytail: one flat budget; lower it if a notification's title/body still tips the
+# total past 4 KB.
+FCM_DATA_BYTE_BUDGET = 3500
+
+# Small routing/metadata keys the client needs to act on a push — kept intact; only
+# large free-text values (message body, injected blobs) get trimmed.
+_FCM_PRESERVED_KEYS = frozenset(
+    {
+        "doctype",
+        "docname",
+        "type",
+        "kind",
+        "route",
+        "spa_route",
+        "ticket_id",
+        "conversation_id",
+    }
+)
+_FCM_ELLIPSIS = "…"
+
+
+def _utf8_len(value: str) -> int:
+    return len(value.encode("utf-8"))
+
+
+def _fcm_data_size(data: Dict[str, str]) -> int:
+    """FCM counts the data payload as the sum of every key and value byte length."""
+    return sum(_utf8_len(key) + _utf8_len(value) for key, value in data.items())
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    """Truncate to <= max_bytes UTF-8 bytes without splitting a character.
+
+    Appends an ellipsis when there is room for it; drops the value to empty when the
+    budget is smaller than the ellipsis itself.
+    """
+    if _utf8_len(value) <= max_bytes:
+        return value
+    ellipsis_len = _utf8_len(_FCM_ELLIPSIS)
+    if max_bytes <= ellipsis_len:
+        return ""
+    keep = max_bytes - ellipsis_len
+    return value.encode("utf-8")[:keep].decode("utf-8", "ignore") + _FCM_ELLIPSIS
+
+
+def fit_data_to_fcm_limit(
+    data: Dict[str, str], budget: int = FCM_DATA_BYTE_BUDGET
+) -> Dict[str, str]:
+    """Shrink an over-budget FCM data payload so Firebase accepts it.
+
+    Truncates the largest non-routing value first (a long message body or an injected
+    blob), preserving the small routing keys so the client can still act on the push.
+    Best-effort: if only routing keys remain and they still exceed the budget
+    (pathological), returns what it has rather than looping forever.
+    """
+    if _fcm_data_size(data) <= budget:
+        return data
+
+    fitted = dict(data)
+    while _fcm_data_size(fitted) > budget:
+        candidates = [
+            (key, value)
+            for key, value in fitted.items()
+            if key not in _FCM_PRESERVED_KEYS and value
+        ]
+        if not candidates:
+            break  # ponytail: only routing keys left — nothing safe to trim
+        key, value = max(candidates, key=lambda item: _utf8_len(item[1]))
+        over = _fcm_data_size(fitted) - budget
+        fitted[key] = _truncate_utf8(value, max(0, _utf8_len(value) - over))
+    return fitted
+
+
 def stringify_data(data: Dict[str, Any]) -> Dict[str, str]:
-    """Coerce payload values into strings for FCM data payloads."""
+    """Coerce payload values into strings for FCM data payloads, size-capped to 4 KB."""
     result = {}
     for key, value in data.items():
         if value is None:
@@ -518,7 +594,7 @@ def stringify_data(data: Dict[str, Any]) -> Dict[str, str]:
             result[key] = json.dumps(value)
         else:
             result[key] = frappe.as_unicode(value)
-    return result
+    return fit_data_to_fcm_limit(result)
 
 
 def get_user_devices(user):

@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "allow_rename": 1,
  "autoname": "naming_series:",
  "creation": "2022-02-06 15:46:19.185765",
@@ -16,7 +17,6 @@
   "column_break_rzak",
   "device_token",
   "platform",
-  "application_type",
   "is_physical_device",
   "package_info_section",
   "app_name",
@@ -346,15 +346,6 @@
    "reqd": 1
   },
   {
-   "fieldname": "application_type",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Application Type",
-   "options": "\nCustomer\nAgent",
-   "set_only_once": 1
-  },
-  {
    "fieldname": "package_info_section",
    "fieldtype": "Section Break",
    "label": "Package Info"
@@ -419,7 +410,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-29 17:34:58.539449",
+ "modified": "2026-07-13 16:12:01.782998",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "User Device",

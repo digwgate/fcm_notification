@@ -141,6 +141,44 @@ class TestTokenSweep(IntegrationTestCase):
         self.assertEqual(frappe.db.get_value("User Device", name, "enabled"), 1,
             "Rows active within the staleness window must NOT be soft-disabled.")
 
+    def test_hard_delete_leaves_no_deleted_document_blob(self):
+        """The pass must delete permanently. Plain ``delete_doc`` copies each
+        row into tabDeleted Document as full JSON, which has no default
+        retention — the sweep would relocate the table instead of pruning it.
+        """
+        name = _insert_user_device("no-blob", enabled=False, days_ago=60)
+
+        token_sweep.run()
+
+        self.assertFalse(frappe.db.exists("User Device", name))
+        self.assertFalse(
+            frappe.db.exists(
+                "Deleted Document",
+                {"deleted_doctype": "User Device", "deleted_name": name},
+            ),
+            "Hard-deleted devices must not leave a Deleted Document blob behind.",
+        )
+
+    def test_each_pass_is_capped_per_run(self):
+        """Both passes are bounded per run so a backlog can't outrun the 300s
+        `default` queue timeout and roll the whole transaction back."""
+        for i in range(3):
+            _insert_user_device(f"cap-soft-{i}", enabled=True, days_ago=120)
+            _insert_user_device(f"cap-hard-{i}", enabled=False, days_ago=60)
+
+        with mock.patch.object(token_sweep, "_MAX_ROWS_PER_RUN", 2):
+            result = token_sweep.run()
+
+        self.assertEqual(result["soft_disabled"], 2, "Soft-disable pass ignored the cap.")
+        self.assertEqual(result["hard_deleted"], 2, "Hard-delete pass ignored the cap.")
+        # Leftovers survive for the next run rather than being lost.
+        self.assertTrue(
+            frappe.db.count(
+                "User Device", {"device_token": ("like", f"{_TEST_TOKEN_PREFIX}cap-%")}
+            )
+            >= 1
+        )
+
     # --- settings ---------------------------------------------------------
 
     def test_kill_switch_short_circuits_the_run(self):

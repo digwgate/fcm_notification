@@ -111,6 +111,9 @@ doc_events = {
     "User Device": {
         "on_update": "fcm_notification.send_notification.invalidate_user_devices_cache_hooks",
         "after_insert": "fcm_notification.send_notification.invalidate_user_devices_cache_hooks",
+        # Without this a deleted device stays in the user_devices:<user> cache
+        # for its full hour, so pushes keep being sent to it.
+        "on_trash": "fcm_notification.send_notification.invalidate_user_devices_cache_hooks",
     },
 }
 

@@ -29,6 +29,10 @@ sends aren't fanned out to dead tokens. Each run:
 1. **soft-disables** rows untouched for `token_staleness_days` (default 90), then
 2. **hard-deletes** rows that have been disabled for `disabled_token_retention_days` (default 30).
 
+Deletes are permanent (no `Deleted Document` copy), and each pass handles at most 5,000 rows per
+run, oldest first — so a large backlog drains over consecutive days instead of risking the job's
+timeout.
+
 Both windows live in **FCM Notification Settings → Configuration → Token Lifecycle**, and fall back
 to the defaults above while unset. Tick **Disable Token Sweep** in the same section to switch the
 job off.

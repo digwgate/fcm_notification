@@ -24,6 +24,10 @@
   "ios_sound_critical",
   "ios_sound_volume",
   "column_break_mwwi",
+  "token_lifecycle_section",
+  "token_sweep_disabled",
+  "disabled_token_retention_days",
+  "token_staleness_days",
   "notification_center_tab",
   "notification_center_reference_section",
   "notification_center_doctypes",
@@ -143,6 +147,34 @@
    "fieldtype": "Column Break"
   },
   {
+   "fieldname": "token_lifecycle_section",
+   "fieldtype": "Section Break",
+   "label": "Token Lifecycle"
+  },
+  {
+   "default": "0",
+   "description": "Kill switch for the daily User Device staleness sweep. Leave unchecked to keep token cleanup running; check it and the scheduled job exits early without inspecting any rows.",
+   "fieldname": "token_sweep_disabled",
+   "fieldtype": "Check",
+   "label": "Disable Token Sweep"
+  },
+  {
+   "default": "30",
+   "description": "Hard-delete User Device rows that have been disabled (enabled=0) for at least this many days. The grace period exists so a temporarily-offline device that comes back online doesn't lose its row immediately. Unset falls back to 30.",
+   "fieldname": "disabled_token_retention_days",
+   "fieldtype": "Int",
+   "label": "Disabled Token Retention (Days)",
+   "non_negative": 1
+  },
+  {
+   "default": "90",
+   "description": "Soft-disable enabled User Device rows that have been silent (no FCM error feedback, no mobile re-registration) for at least this many days. Mirrors the FCM Flutter doc's recommended staleness window. Disabled rows then enter the retention window above. Unset falls back to 90.",
+   "fieldname": "token_staleness_days",
+   "fieldtype": "Int",
+   "label": "Token Staleness Window (Days)",
+   "non_negative": 1
+  },
+  {
    "fieldname": "notification_center_tab",
    "fieldtype": "Tab Break",
    "label": "Notification Center"
@@ -183,7 +215,7 @@
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-05-06 15:50:00.000000",
+ "modified": "2026-07-24 20:50:00.000000",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "FCM Notification Settings",

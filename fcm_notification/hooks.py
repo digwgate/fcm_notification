@@ -117,6 +117,15 @@ doc_events = {
 # Scheduled Tasks
 # ---------------
 
+scheduler_events = {
+    "daily": [
+        # Hard-delete long-disabled User Device rows + soft-disable
+        # long-inactive ones so the token table stays lean. Honors the
+        # FCM Notification Settings.token_sweep_disabled kill switch.
+        "fcm_notification.token_sweep.run",
+    ],
+}
+
 # scheduler_events = {
 # 	"all": [
 # 		"fcm_notification.tasks.all"

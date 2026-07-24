@@ -21,6 +21,18 @@ To learn more about server scripts [see this link.](https://frappeframework.com/
 5. Run an event that triggers any notification. The notifcation will be send the respetive user via FCM if they have subscribed to it.
 
 
+### Device token cleanup
+
+A daily scheduled job (`fcm_notification/token_sweep.py`) keeps the **User Device** table lean so
+sends aren't fanned out to dead tokens. Each run:
+
+1. **soft-disables** rows untouched for `token_staleness_days` (default 90), then
+2. **hard-deletes** rows that have been disabled for `disabled_token_retention_days` (default 30).
+
+Both windows live in **FCM Notification Settings → Configuration → Token Lifecycle**, and fall back
+to the defaults above while unset. Tick **Disable Token Sweep** in the same section to switch the
+job off.
+
 ## Supporting Organization
 
 The development of this app was commissioned by [Searchosis marketing Pvt Ltd](searchosis.com)

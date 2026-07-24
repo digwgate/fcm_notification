@@ -610,7 +610,7 @@ def get_user_devices(user):
         filters={"user": user, "enabled": True},
         fields=["device_token", "name", "user"],
         order_by="creation desc",
-        limit_page_length=5,
+        limit=5,
         distinct=True,
     )
 

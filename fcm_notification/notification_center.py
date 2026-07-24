@@ -401,7 +401,7 @@ def get_role_options(txt="", limit=20):
         filters=filters,
         fields=["name"],
         order_by="name asc",
-        limit_page_length=int(limit or 20),
+        limit=int(limit or 20),
     )
     return [
         {"value": row["name"], "label": row["name"], "description": ""}
@@ -421,7 +421,7 @@ def get_user_group_options(txt="", limit=20):
         filters=filters,
         fields=["name"],
         order_by="name asc",
-        limit_page_length=int(limit or 20),
+        limit=int(limit or 20),
     )
     return [
         {"value": row["name"], "label": row["name"], "description": ""}
@@ -484,8 +484,8 @@ def _get_reference_doctype_rows(txt="", limit=20, start=0):
         filters=filters,
         fields=["name"],
         order_by="name asc",
-        limit_start=int(start or 0),
-        limit_page_length=int(limit or 20),
+        offset=int(start or 0),
+        limit=int(limit or 20),
     )
 
 

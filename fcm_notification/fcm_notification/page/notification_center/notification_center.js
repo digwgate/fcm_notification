@@ -180,11 +180,16 @@ class NotificationCenterPage {
 			fieldname: "users",
 			label: __("Individual Users"),
 			placeholder: __("Select users"),
-			get_data: (txt) =>
-				frappe.xcall(`${this.method}.get_enabled_user_options`, {
+			get_data: (txt) => {
+				const platform = this.fields.platform.get_value();
+				return frappe.xcall("frappe.desk.search.search_link", {
+					doctype: "User",
 					txt,
-					platform: this.fields.platform.get_value(),
-				}),
+					query: `${this.method}.get_enabled_user_link_query`,
+					filters: platform ? { platform } : {},
+					page_length: Number.parseInt(frappe.boot.sysdefaults?.link_field_results_limit, 10) || 10,
+				});
+			},
 			change: () => this.refresh_recipients(),
 		});
 		this.fields.enqueue = this.make_field("enqueue", {

@@ -388,6 +388,54 @@ def get_enabled_user_options(txt="", platform=None, limit=20):
 
 
 @frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_enabled_user_link_query(
+    doctype,
+    txt,
+    searchfield,
+    start,
+    page_len,
+    filters=None,
+    **kwargs,
+):
+    """Return enabled users with eligible FCM devices for native Link search."""
+    _require_system_manager()
+
+    filters = filters or {}
+    platform = _normalize_platform(filters.get("platform"))
+    user = frappe.qb.DocType("User")
+    user_device = frappe.qb.DocType("User Device")
+    query = (
+        frappe.qb.from_(user)
+        .join(user_device)
+        .on(user_device.user == user.name)
+        .select(user.name, user.full_name, user.email)
+        .distinct()
+        .where(user.enabled == 1)
+        .where(user_device.enabled == 1)
+        .where(user_device.device_token != "")
+    )
+
+    if platform:
+        query = query.where(user_device.platform == platform)
+    if txt:
+        search_text = f"%{txt}%"
+        query = query.where(
+            (user.name.like(search_text))
+            | (user.full_name.like(search_text))
+            | (user.email.like(search_text))
+        )
+
+    return (
+        query.orderby(user.full_name)
+        .orderby(user.name)
+        .offset(start)
+        .limit(page_len)
+        .run(as_list=True)
+    )
+
+
+@frappe.whitelist()
 def get_role_options(txt="", limit=20):
     _require_system_manager()
     applicable_roles = sorted(_get_applicable_roles())

@@ -1,8 +1,109 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import fcm_notification.notification_center as notification_center
+
+
+class _LinkSearchCriterion:
+    def __init__(self, value):
+        self.value = value
+
+    def __and__(self, other):
+        return _LinkSearchCriterion(f"({self.value} AND {other.value})")
+
+    def __or__(self, other):
+        return _LinkSearchCriterion(f"({self.value} OR {other.value})")
+
+    def __repr__(self):
+        return self.value
+
+
+class _LinkSearchField:
+    def __init__(self, table, name):
+        self.value = f"{table}.{name}"
+
+    def __eq__(self, other):
+        return _LinkSearchCriterion(f"{self.value} = {other!r}")
+
+    def __ne__(self, other):
+        return _LinkSearchCriterion(f"{self.value} != {other!r}")
+
+    def like(self, value):
+        return _LinkSearchCriterion(f"{self.value} LIKE {value!r}")
+
+    def __repr__(self):
+        return self.value
+
+
+class _LinkSearchTable:
+    def __init__(self, name):
+        self.doctype = name
+
+    def __getattr__(self, fieldname):
+        return _LinkSearchField(self.doctype, fieldname)
+
+
+class _LinkSearchQuery:
+    def __init__(self, rows):
+        self.rows = rows
+        self.operations = []
+
+    def join(self, table):
+        self.operations.append(("join", table.doctype))
+        return self
+
+    def on(self, condition):
+        self.operations.append(("on", repr(condition)))
+        return self
+
+    def select(self, *fields):
+        self.operations.append(("select", [repr(field) for field in fields]))
+        return self
+
+    def distinct(self):
+        self.operations.append(("distinct",))
+        return self
+
+    def where(self, condition):
+        self.operations.append(("where", repr(condition)))
+        return self
+
+    def orderby(self, field):
+        self.operations.append(("orderby", repr(field)))
+        return self
+
+    def offset(self, value):
+        self.operations.append(("offset", value))
+        return self
+
+    def limit(self, value):
+        self.operations.append(("limit", value))
+        return self
+
+    def run(self, as_list=False):
+        self.operations.append(("run", as_list))
+        return self.rows
+
+
+def install_link_search_query(monkeypatch, rows):
+    query = _LinkSearchQuery(rows)
+    monkeypatch.setattr(
+        notification_center.frappe,
+        "qb",
+        SimpleNamespace(
+            DocType=lambda name: _LinkSearchTable(name),
+            from_=lambda table: query,
+        ),
+    )
+    monkeypatch.setattr(
+        notification_center.frappe.local,
+        "db",
+        SimpleNamespace(exists=lambda doctype, name: True),
+        raising=False,
+    )
+    return query
 
 
 def install_permissions(monkeypatch):
@@ -177,6 +278,90 @@ def test_get_enabled_user_options_excludes_users_without_enabled_devices(monkeyp
             "description": "has-device@example.com",
         }
     ]
+
+
+def test_enabled_user_link_query_uses_bounded_distinct_database_search(monkeypatch):
+    required_roles = []
+    monkeypatch.setattr(
+        notification_center.frappe,
+        "only_for",
+        lambda role: required_roles.append(role),
+    )
+    query = install_link_search_query(
+        monkeypatch,
+        [
+            ("ada@example.com", "Ada Lovelace", "ada@example.com"),
+            ("grace@example.com", "Grace Hopper", "grace@example.com"),
+        ],
+    )
+    monkeypatch.setattr(
+        notification_center,
+        "_get_enabled_device_rows",
+        lambda *args, **kwargs: pytest.fail("Link search must not load all devices"),
+    )
+    monkeypatch.setattr(
+        notification_center,
+        "_get_user_details",
+        lambda *args, **kwargs: pytest.fail("Link search must not load all users"),
+    )
+
+    result = notification_center.get_enabled_user_link_query(
+        "User",
+        "ada",
+        "name",
+        4,
+        2,
+        {"platform": "ios"},
+    )
+
+    assert result == [
+        ("ada@example.com", "Ada Lovelace", "ada@example.com"),
+        ("grace@example.com", "Grace Hopper", "grace@example.com"),
+    ]
+    assert required_roles == ["System Manager"]
+    assert query.operations == [
+        ("join", "User Device"),
+        ("on", "User Device.user = User.name"),
+        ("select", ["User.name", "User.full_name", "User.email"]),
+        ("distinct",),
+        ("where", "User.enabled = 1"),
+        ("where", "User Device.enabled = 1"),
+        ("where", "User Device.device_token != ''"),
+        ("where", "User Device.platform = 'IOS'"),
+        (
+            "where",
+            "((User.name LIKE '%ada%' OR User.full_name LIKE '%ada%') OR User.email LIKE '%ada%')",
+        ),
+        ("orderby", "User.full_name"),
+        ("orderby", "User.name"),
+        ("offset", 4),
+        ("limit", 2),
+        ("run", True),
+    ]
+
+
+def test_enabled_user_link_query_accepts_blank_text_and_unsupported_platform(monkeypatch):
+    install_permissions(monkeypatch)
+    query = install_link_search_query(monkeypatch, [])
+
+    result = notification_center.get_enabled_user_link_query(
+        "User", "", "name", 0, 10, {"platform": "Desktop"}
+    )
+
+    assert result == []
+    assert ("where", "User Device.platform = 'Desktop'") in query.operations
+    assert not any("LIKE" in operation[-1] for operation in query.operations if operation[0] == "where")
+
+
+def test_individual_users_field_uses_native_bounded_link_search():
+    page_script = Path(notification_center.__file__).parent / "fcm_notification/page/notification_center/notification_center.js"
+    source = page_script.read_text()
+
+    assert 'frappe.xcall("frappe.desk.search.search_link", {' in source
+    assert 'doctype: "User"' in source
+    assert "query: `${this.method}.get_enabled_user_link_query`" in source
+    assert "page_length: Number.parseInt(frappe.boot.sysdefaults?.link_field_results_limit, 10) || 10" in source
+    assert "get_enabled_user_options" not in source
 
 
 def test_get_role_options_excludes_guest_and_sets_blank_description(monkeypatch):

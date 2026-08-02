@@ -1,8 +1,40 @@
 from types import SimpleNamespace
 
 import pytest
+from firebase_admin import messaging
 
 import fcm_notification.send_notification as send_module
+
+
+def install_fake_db(monkeypatch, rows=None):
+    """Swap the whole ``frappe.db`` attribute + ``frappe.get_all``.
+
+    ``frappe.db`` is an unbound ``Local`` proxy outside a bootstrapped site,
+    so patching a method *on* it fails — the attribute itself has to go.
+
+    ``get_all`` matches ``rows`` on plain equality, which is all these
+    filters use. Returns the list that records every ``set_value`` call.
+    """
+    set_value_calls = []
+    monkeypatch.setattr(
+        send_module.frappe,
+        "db",
+        SimpleNamespace(
+            set_value=lambda *args, **kwargs: set_value_calls.append(args),
+            commit=lambda: None,
+        ),
+    )
+
+    def get_all(doctype, filters=None, pluck=None, **kwargs):
+        matched = [
+            row
+            for row in (rows or [])
+            if all(row.get(key) == value for key, value in (filters or {}).items())
+        ]
+        return [row[pluck] for row in matched] if pluck else matched
+
+    monkeypatch.setattr(send_module.frappe, "get_all", get_all)
+    return set_value_calls
 
 
 def install_settings(monkeypatch, allowed_types=None):
@@ -268,3 +300,153 @@ def test_stringify_data_caps_payload_size():
 
     assert send_module._fcm_data_size(result) <= send_module.FCM_DATA_BYTE_BUDGET
     assert result["docname"] == "T-4"
+
+
+# --- device lifecycle -------------------------------------------------------
+
+
+def _install_failing_send(monkeypatch, error):
+    def raise_error(self, device, data, title, body):
+        raise error
+
+    monkeypatch.setattr(
+        send_module.FCMNotificationService, "send_to_device", raise_error
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_select", "expected_log_fragment"),
+    [
+        (
+            messaging.UnregisteredError("token is gone"),
+            "Unregistered",
+            "Unregistered Device: token is gone",
+        ),
+        (
+            messaging.SenderIdMismatchError("wrong sender"),
+            "Sender ID Mismatch",
+            "Sender ID Mismatch: wrong sender",
+        ),
+    ],
+)
+def test_dead_token_disable_writes_the_select_and_still_logs_the_exception(
+    monkeypatch, error, expected_select, expected_log_fragment
+):
+    """The Select value and the log text are two separate channels.
+
+    Overloading the free-text ``reason`` with the Select value would throw
+    away the exception detail, which is the only diagnostic these paths have.
+    """
+    install_settings(monkeypatch)
+    set_value_calls = install_fake_db(monkeypatch)
+    logged = []
+    monkeypatch.setattr(
+        send_module.frappe, "log_error", lambda **kwargs: logged.append(kwargs)
+    )
+    monkeypatch.setattr(send_module, "invalidate_user_devices_cache", lambda user: None)
+    _install_failing_send(monkeypatch, error)
+
+    send_module.FCMNotificationService().safe_send_to_device(
+        {"device_token": "tok-1", "name": "DEV-1", "user": "u@example.com"},
+        data={},
+        title="T",
+        body="B",
+        user="u@example.com",
+    )
+
+    assert set_value_calls == [
+        ("User Device", "DEV-1", {"enabled": 0, "disabled_reason": expected_select})
+    ]
+    assert expected_log_fragment in logged[0]["message"]
+
+
+def _device_rows():
+    """One row per case ``enable_user_devices`` has to discriminate between."""
+    return [
+        {
+            "name": "DEV-ACCOUNT",
+            "user": "u@example.com",
+            "enabled": 0,
+            "disabled_reason": "Account Disabled",
+        },
+        {
+            "name": "DEV-DEAD",
+            "user": "u@example.com",
+            "enabled": 0,
+            "disabled_reason": "Unregistered",
+        },
+        # Disabled before the field existed — reads NULL, not "".
+        {
+            "name": "DEV-LEGACY",
+            "user": "u@example.com",
+            "enabled": 0,
+            "disabled_reason": None,
+        },
+        {
+            "name": "DEV-LIVE",
+            "user": "u@example.com",
+            "enabled": 1,
+            "disabled_reason": None,
+        },
+        {
+            "name": "DEV-OTHERUSER",
+            "user": "other@example.com",
+            "enabled": 0,
+            "disabled_reason": "Account Disabled",
+        },
+    ]
+
+
+def test_disable_user_devices_disables_enabled_rows_and_invalidates_cache(monkeypatch):
+    set_value_calls = install_fake_db(monkeypatch, rows=_device_rows())
+    invalidated = []
+    monkeypatch.setattr(
+        send_module, "invalidate_user_devices_cache", invalidated.append
+    )
+
+    disabled = send_module.disable_user_devices("u@example.com", "Account Disabled")
+
+    assert disabled == 1
+    assert set_value_calls == [
+        (
+            "User Device",
+            {"name": ["in", ["DEV-LIVE"]]},
+            {"enabled": 0, "disabled_reason": "Account Disabled"},
+        )
+    ]
+    assert invalidated == ["u@example.com"]
+
+
+def test_enable_user_devices_touches_only_rows_disabled_for_that_reason(monkeypatch):
+    """Dead-token rows and legacy null-reason rows must NOT be resurrected."""
+    set_value_calls = install_fake_db(monkeypatch, rows=_device_rows())
+    invalidated = []
+    monkeypatch.setattr(
+        send_module, "invalidate_user_devices_cache", invalidated.append
+    )
+
+    enabled = send_module.enable_user_devices("u@example.com", "Account Disabled")
+
+    assert enabled == 1
+    assert set_value_calls == [
+        (
+            "User Device",
+            # DEV-DEAD (Unregistered), DEV-LEGACY (null reason), DEV-LIVE
+            # (already enabled) and DEV-OTHERUSER are all absent.
+            {"name": ["in", ["DEV-ACCOUNT"]]},
+            {"enabled": 1, "disabled_reason": ""},
+        )
+    ]
+    assert invalidated == ["u@example.com"]
+
+
+def test_enable_user_devices_writes_nothing_when_no_row_matches(monkeypatch):
+    set_value_calls = install_fake_db(monkeypatch, rows=_device_rows())
+    invalidated = []
+    monkeypatch.setattr(
+        send_module, "invalidate_user_devices_cache", invalidated.append
+    )
+
+    assert send_module.enable_user_devices("u@example.com", "Stale") == 0
+    assert set_value_calls == []
+    assert invalidated == []

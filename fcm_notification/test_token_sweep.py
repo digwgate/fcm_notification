@@ -21,6 +21,7 @@ every save.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest import mock
 
 import frappe
@@ -338,3 +339,45 @@ class TestTokenSweep(IntegrationTestCase):
             msg,
             r"^FCM token sweep: hard-deleted \d+, soft-disabled \d+$",
         )
+
+
+# --- pure-unit: bulk write shape --------------------------------------------
+#
+# A module-level function, not a `TestTokenSweep` method: everything in that
+# class needs a bootstrapped site, and this assertion doesn't. Keeping it out
+# of the class is what lets it actually run.
+
+
+def test_soft_disable_stamps_stale_reason_in_the_same_bulk_update(monkeypatch):
+    """``disabled_reason`` must ride the existing bulk UPDATE.
+
+    A second ``set_value`` for the reason would reintroduce exactly the extra
+    round-trip the filter-dict form exists to remove.
+    """
+    set_value_calls: list[tuple] = []
+    # now_datetime/add_to_date reach for the site's timezone Single; the
+    # cutoff value is irrelevant here because get_all is stubbed anyway.
+    monkeypatch.setattr(token_sweep, "now_datetime", lambda: "NOW")
+    monkeypatch.setattr(token_sweep, "add_to_date", lambda when, days: "CUTOFF")
+    monkeypatch.setattr(
+        token_sweep.frappe,
+        "get_all",
+        lambda *args, **kwargs: [{"name": "DEV-1", "user": "u@example.com"}],
+    )
+    monkeypatch.setattr(
+        token_sweep.frappe,
+        "db",
+        SimpleNamespace(set_value=lambda *args: set_value_calls.append(args)),
+    )
+    monkeypatch.setattr(
+        token_sweep, "invalidate_user_devices_cache", lambda user: None
+    )
+
+    assert token_sweep._soft_disable_stale_tokens(90) == 1
+    assert set_value_calls == [
+        (
+            "User Device",
+            {"name": ["in", ["DEV-1"]]},
+            {"enabled": 0, "disabled_reason": "Stale"},
+        )
+    ]

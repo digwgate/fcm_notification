@@ -8,7 +8,8 @@ latest token, and the backend deals with cleanup.
 Two cleanup passes per run:
 
 1. **Soft-disable** rows where ``enabled=1`` AND
-   ``modified < now() - token_staleness_days`` (default 90 days).
+   ``modified < now() - token_staleness_days`` (default 90 days),
+   stamping ``disabled_reason = "Stale"`` in the same UPDATE.
    Mirrors the FCM Flutter doc's recommended staleness window for tokens
    that haven't seen any feedback in a while.
 
@@ -16,6 +17,12 @@ Two cleanup passes per run:
    ``modified < now() - disabled_token_retention_days`` (default 30
    days). The grace period gives a temporarily-offline device a chance
    to come back before its row is permanently dropped.
+
+   Deliberately **no** ``disabled_reason`` clause: retention applies to
+   every disabled row whatever disabled it — a dead token, this sweep, or
+   ``disable_user_devices``. So a row soft-disabled by an account disable
+   is still hard-deleted once retention passes, and the device simply
+   re-registers on the client's next launch.
 
 Order doesn't matter for correctness (a just-soft-disabled row has
 ``modified=now`` so it can't satisfy the hard-delete cutoff in the same
@@ -77,6 +84,9 @@ def _read_settings() -> tuple[bool, int, int]:
 def _soft_disable_stale_tokens(staleness_days: int) -> int:
     """Flip ``enabled=0`` on rows that have been silent past the staleness window.
 
+    Stamps ``disabled_reason = "Stale"`` in the same UPDATE, so every row
+    this pass disables carries the reason it was disabled for.
+
     Touches ``modified`` so the row enters the retention window for the
     next sweep's hard-delete pass. Issues a single bulk ``frappe.db.set_value``
     call (filter-dict form) instead of one call per row, reducing N+1 DB
@@ -100,8 +110,14 @@ def _soft_disable_stale_tokens(staleness_days: int) -> int:
         return 0
 
     stale_names = [row["name"] for row in candidates]
-    # Single bulk UPDATE — replaces N individual set_value calls.
-    frappe.db.set_value("User Device", {"name": ["in", stale_names]}, "enabled", 0)
+    # Single bulk UPDATE — replaces N individual set_value calls. Both
+    # columns go in the one call; a second set_value for the reason would
+    # reintroduce the round-trip this form exists to remove.
+    frappe.db.set_value(
+        "User Device",
+        {"name": ["in", stale_names]},
+        {"enabled": 0, "disabled_reason": "Stale"},
+    )
 
     # Invalidate the per-user device cache for every affected user.
     # db.set_value fires no document hooks, so invalidation must be explicit.

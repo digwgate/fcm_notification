@@ -183,10 +183,20 @@ class FCMNotificationService:
         try:
             self.send_to_device(device, data, title, body)
         except messaging.UnregisteredError as e:
-            self._disable_device(device, user=user, reason=f"Unregistered Device: {e}")
+            self._disable_device(
+                device,
+                user=user,
+                reason=f"Unregistered Device: {e}",
+                disabled_reason="Unregistered",
+            )
             return self._device_token(device)
         except messaging.SenderIdMismatchError as e:
-            self._disable_device(device, user=user, reason=f"Sender ID Mismatch: {e}")
+            self._disable_device(
+                device,
+                user=user,
+                reason=f"Sender ID Mismatch: {e}",
+                disabled_reason="Sender ID Mismatch",
+            )
             return self._device_token(device)
         except Exception as e:
             frappe.log_error(
@@ -376,11 +386,31 @@ class FCMNotificationService:
             deduplicated.append(device)
         return deduplicated
 
-    def _disable_device(self, device, user: Optional[str], reason: str = ""):
+    def _disable_device(
+        self,
+        device,
+        user: Optional[str],
+        reason: str = "",
+        disabled_reason: str = "",
+    ):
+        """Soft-disable one device row.
+
+        Two distinct "reasons", deliberately not merged:
+
+        - ``disabled_reason`` is the ``User Device.disabled_reason`` Select
+          value — a fixed, queryable category.
+        - ``reason`` is free-text for the Error Log only, and carries the
+          exception detail the caller saw. Overloading the Select with it
+          would destroy that diagnostic.
+        """
         device_name = self._device_name(device)
         device_token = self._device_token(device)
         if device_name:
-            frappe.db.set_value("User Device", device_name, "enabled", 0)
+            frappe.db.set_value(
+                "User Device",
+                device_name,
+                {"enabled": 0, "disabled_reason": disabled_reason},
+            )
             frappe.db.commit()
             invalidate_user_devices_cache(user or self._device_user(device))
         frappe.log_error(
@@ -658,3 +688,61 @@ def invalidate_user_devices_cache(user):
     """Invalidate the cache for user devices."""
     cache_key = f"user_devices:{user}"
     frappe.cache().delete_value(cache_key)
+
+
+def disable_user_devices(user: str, reason: str) -> int:
+    """Soft-disable every enabled device of ``user``, stamping ``reason``.
+
+    ``reason`` is a ``User Device.disabled_reason`` Select value. Rows are
+    never deleted here — they stay subject to ``token_sweep``'s retention
+    window like any other disabled row.
+
+    Returns the number of rows disabled. The caller owns the transaction;
+    this issues no commit.
+    """
+    names = frappe.get_all(
+        "User Device", filters={"user": user, "enabled": 1}, pluck="name"
+    )
+    if not names:
+        return 0
+
+    frappe.db.set_value(
+        "User Device",
+        {"name": ["in", names]},
+        {"enabled": 0, "disabled_reason": reason},
+    )
+    # db.set_value fires no document hooks, so invalidation must be explicit.
+    invalidate_user_devices_cache(user)
+    return len(names)
+
+
+def enable_user_devices(user: str, reason: str) -> int:
+    """Re-enable only the devices of ``user`` that were disabled *for* ``reason``.
+
+    Matching on ``disabled_reason`` is what makes the restore symmetric
+    rather than blanket: a row disabled for a dead token
+    (``Unregistered``/``Sender ID Mismatch``/``Stale``) is not resurrected,
+    and a legacy row disabled before the field existed carries an empty
+    reason, so it is left alone too.
+
+    Clears ``disabled_reason`` on the rows it re-enables, so an enabled row
+    never carries a stale disable category.
+
+    Returns the number of rows re-enabled. The caller owns the transaction;
+    this issues no commit.
+    """
+    names = frappe.get_all(
+        "User Device",
+        filters={"user": user, "enabled": 0, "disabled_reason": reason},
+        pluck="name",
+    )
+    if not names:
+        return 0
+
+    frappe.db.set_value(
+        "User Device",
+        {"name": ["in", names]},
+        {"enabled": 1, "disabled_reason": ""},
+    )
+    invalidate_user_devices_cache(user)
+    return len(names)

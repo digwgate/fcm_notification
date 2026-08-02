@@ -12,6 +12,7 @@
   "device_name",
   "model",
   "enabled",
+  "disabled_reason",
   "physical_ram_size",
   "naming_series",
   "column_break_rzak",
@@ -391,6 +392,15 @@
    "label": "Enabled"
   },
   {
+   "depends_on": "eval:!doc.enabled",
+   "description": "Why this device was disabled. Empty on enabled rows and on rows disabled before this field existed.",
+   "fieldname": "disabled_reason",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Disabled Reason",
+   "options": "\nUnregistered\nSender ID Mismatch\nStale\nAccount Disabled"
+  },
+  {
    "fieldname": "device_token",
    "fieldtype": "Small Text",
    "in_standard_filter": 1,
@@ -410,7 +420,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-13 16:12:01.782998",
+ "modified": "2026-08-02 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "User Device",

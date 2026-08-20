@@ -82,6 +82,34 @@ class TestTokenDedupePatch(IntegrationTestCase):
             self.assertEqual(row.enabled, 0)
             self.assertEqual(row.disabled_reason, "Rebound")
 
+    def test_a_disabled_row_never_outranks_a_live_one(self):
+        """The keeper is the newest ENABLED row, not simply the newest row.
+
+        Disabling TOUCHES ``modified`` — the sweep depends on that to start the
+        retention clock — so a row the sweep disabled yesterday is always
+        "newer" than a live row that has merely been quiet for a month. Ordering
+        on ``modified`` alone hands the token to the dead row and clears it off
+        the handset that is still using it, which reads as a silent push outage
+        for a real user until their app happens to re-register.
+        """
+        live = _insert_raw(f"{_PREFIX}live", _SHARED, days_ago=30, enabled=1)
+        recently_disabled = _insert_raw(
+            f"{_PREFIX}dead", _SHARED, days_ago=1, enabled=0
+        )
+
+        patch.run()
+
+        kept = self._row(live, "device_token", "token_hash", "enabled")
+        self.assertEqual(
+            kept.device_token, _SHARED, "the live row must keep the token"
+        )
+        self.assertEqual(kept.token_hash, token_hash(_SHARED))
+        self.assertEqual(kept.enabled, 1)
+
+        loser = self._row(recently_disabled, "device_token", "token_hash")
+        self.assertIsNone(loser.device_token)
+        self.assertIsNone(loser.token_hash)
+
     def test_the_unique_index_would_accept_the_result(self):
         """The point of the patch: after it, no two rows share a token hash."""
         _insert_raw(f"{_PREFIX}a", _SHARED, days_ago=5)

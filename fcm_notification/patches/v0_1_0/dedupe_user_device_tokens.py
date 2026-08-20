@@ -56,7 +56,14 @@ def _ensure_token_hash_column() -> bool:
 
 
 def _duplicate_groups() -> Dict[str, List[dict]]:
-    """Rows sharing a token, newest first inside each group."""
+    """Rows sharing a token, keeper first inside each group.
+
+    ENABLED wins before newest. Disabling a row TOUCHES ``modified`` (the sweep
+    relies on that to start the retention clock), so a row the sweep disabled is
+    always "newer" than a live row that has simply been quiet. Ordering on
+    ``modified`` alone therefore hands the token to the dead row and clears it
+    off the live one — a real handset silently loses push until it re-registers.
+    """
     rows = frappe.db.sql(
         f"""
         SELECT name, device_token, user, enabled, modified, creation
@@ -72,7 +79,7 @@ def _duplicate_groups() -> Dict[str, List[dict]]:
                   HAVING COUNT(*) > 1
               ) AS duplicated
           )
-        ORDER BY device_token ASC, modified DESC, creation DESC, name DESC
+        ORDER BY device_token ASC, enabled DESC, modified DESC, creation DESC, name DESC
         """,
         as_dict=True,
     )

@@ -8,10 +8,15 @@ latest token, and the backend deals with cleanup.
 Two cleanup passes per run:
 
 1. **Soft-disable** rows where ``enabled=1`` AND
-   ``modified < now() - token_staleness_days`` (default 90 days),
-   stamping ``disabled_reason = "Stale"`` in the same UPDATE.
-   Mirrors the FCM Flutter doc's recommended staleness window for tokens
-   that haven't seen any feedback in a while.
+   ``COALESCE(last_seen_at, modified) < now() - token_staleness_days``
+   (default 90 days), stamping ``disabled_reason = "Stale"`` in the same
+   UPDATE. Mirrors the FCM Flutter doc's recommended staleness window for
+   tokens that haven't seen any feedback in a while.
+
+   ``last_seen_at`` is the fact that matters — the client bumps it on every
+   registration — and ``modified`` is the fallback for rows that predate the
+   field or were written by the legacy path, so there is ONE staleness fact
+   rather than two.
 
 2. **Hard-delete** rows where ``enabled=0`` AND
    ``modified < now() - disabled_token_retention_days`` (default 30
@@ -81,6 +86,32 @@ def _read_settings() -> tuple[bool, int, int]:
     return enabled, retention_days, staleness_days
 
 
+def _stale_candidates(cutoff, limit: int) -> list[dict]:
+    """Enabled rows whose last activity — ``COALESCE(last_seen_at, modified)`` —
+    predates ``cutoff``, oldest first.
+
+    Two ``get_all`` passes rather than one raw ``COALESCE`` query: the ORM's
+    filter grammar cannot express "this column, or that one when it is NULL" in a
+    single call, and dropping to ``frappe.db.sql`` here would take the pass out of
+    the query layer the rest of the module (and its tests) speaks. The union is
+    de-duplicated by row name, so a row matching both passes is counted once.
+    """
+    candidates: dict[str, dict] = {}
+    for activity in (
+        {"last_seen_at": ["<", cutoff]},
+        {"last_seen_at": ["is", "not set"], "modified": ["<", cutoff]},
+    ):
+        for row in frappe.get_all(
+            "User Device",
+            filters={"enabled": 1, **activity},
+            fields=["name", "user"],
+            order_by="modified asc",
+            limit=limit,
+        ):
+            candidates.setdefault(row["name"], row)
+    return list(candidates.values())[:limit]
+
+
 def _soft_disable_stale_tokens(staleness_days: int) -> int:
     """Flip ``enabled=0`` on rows that have been silent past the staleness window.
 
@@ -99,13 +130,7 @@ def _soft_disable_stale_tokens(staleness_days: int) -> int:
     ``IN`` list of the bulk UPDATE to a sane size.
     """
     cutoff = add_to_date(now_datetime(), days=-staleness_days)
-    candidates = frappe.get_all(
-        "User Device",
-        filters={"enabled": 1, "modified": ["<", cutoff]},
-        fields=["name", "user"],
-        order_by="modified asc",
-        limit=_MAX_ROWS_PER_RUN,
-    )
+    candidates = _stale_candidates(cutoff, _MAX_ROWS_PER_RUN)
     if not candidates:
         return 0
 
@@ -130,6 +155,12 @@ def _soft_disable_stale_tokens(staleness_days: int) -> int:
 
 def _hard_delete_disabled_tokens(retention_days: int) -> int:
     """Hard-delete rows that have been disabled past the retention window.
+
+    Measured on ``modified``, NOT on ``COALESCE(last_seen_at, modified)``: for a
+    disabled row ``modified`` is when it was disabled, which is exactly what the
+    retention grace period is counting from. ``last_seen_at`` is older by
+    definition and would delete the row early.
+
 
     ``delete_permanently=True`` is what makes this actually reclaim space:
     without it ``frappe.delete_doc`` copies every row into ``tabDeleted

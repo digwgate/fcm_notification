@@ -51,7 +51,30 @@ def _row(name: str, *fields) -> dict:
     return frappe.db.get_value(DOCTYPE, name, list(fields), as_dict=True)
 
 
+def _purge_committed() -> None:
+    """Delete this module's rows AND COMMIT — for the ones a test made durable."""
+    frappe.db.delete(DOCTYPE, {"device_token": ("like", f"{_PREFIX}%")})
+    frappe.db.delete(DOCTYPE, {"installation_id": ("in", [_INSTALL_A, _INSTALL_B])})
+    frappe.db.commit()
+
+
 class TestDeviceRegistry(IntegrationTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        _purge_committed()
+
+    @classmethod
+    def tearDownClass(cls):
+        # The legacy path (handle_user_device) COMMITS by design, so its rows
+        # outlive the test transaction. The instance _cleanup() below deletes
+        # them inside that transaction and IntegrationTestCase.tearDown then
+        # rolls the delete back — the cleanup undoes itself and the row is left
+        # on the site for good. This runs after the rollback and commits, so
+        # durable debris is actually reclaimed.
+        _purge_committed()
+        super().tearDownClass()
+
     def setUp(self):
         super().setUp()
         frappe.set_user("Administrator")

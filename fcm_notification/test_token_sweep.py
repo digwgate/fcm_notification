@@ -142,6 +142,30 @@ class TestTokenSweep(IntegrationTestCase):
         self.assertEqual(frappe.db.get_value("User Device", name, "enabled"), 1,
             "Rows active within the staleness window must NOT be soft-disabled.")
 
+    def test_a_null_last_seen_at_falls_back_to_modified_not_to_stale(self):
+        """The upgrade trap: every row predating 0.1.0 has last_seen_at NULL.
+
+        This pinned the two-pass ORM emulation that shipped first. Frappe wraps a
+        nullable comparison as ``IFNULL(col, '')``, so ``last_seen_at < cutoff``
+        matched EVERY NULL row — `'' < any date` is true — and the first sweep
+        after the upgrade would have soft-disabled the whole live fleet a batch at
+        a time, ignoring ``modified`` entirely. The row below is recently active
+        and must survive precisely because the fallback is real.
+        """
+        name = _insert_user_device("null-last-seen", enabled=True, days_ago=2)
+        self.assertIsNone(
+            frappe.db.get_value("User Device", name, "last_seen_at"),
+            "fixture precondition: the row must have no last_seen_at",
+        )
+
+        token_sweep.run()
+
+        self.assertEqual(
+            frappe.db.get_value("User Device", name, "enabled"),
+            1,
+            "a NULL last_seen_at must fall back to modified, never read as stale",
+        )
+
     def test_hard_delete_leaves_no_deleted_document_blob(self):
         """The pass must delete permanently. Plain ``delete_doc`` copies each
         row into tabDeleted Document as full JSON, which has no default

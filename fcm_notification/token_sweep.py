@@ -90,26 +90,29 @@ def _stale_candidates(cutoff, limit: int) -> list[dict]:
     """Enabled rows whose last activity — ``COALESCE(last_seen_at, modified)`` —
     predates ``cutoff``, oldest first.
 
-    Two ``get_all`` passes rather than one raw ``COALESCE`` query: the ORM's
-    filter grammar cannot express "this column, or that one when it is NULL" in a
-    single call, and dropping to ``frappe.db.sql`` here would take the pass out of
-    the query layer the rest of the module (and its tests) speaks. The union is
-    de-duplicated by row name, so a row matching both passes is counted once.
+    Raw SQL, deliberately. This was two ``get_all`` passes emulating the
+    COALESCE, and the emulation was WRONG in the one direction that matters:
+    Frappe wraps a nullable comparison as ``IFNULL(col, '')``, so the
+    ``last_seen_at < cutoff`` pass matched every row whose ``last_seen_at`` is
+    NULL — `'' < '2026-05-22'` is true — regardless of ``modified``. Every row
+    predating 0.1.0 has a NULL ``last_seen_at``, so the first sweep after the
+    upgrade would have soft-disabled the entire live fleet, a batch per day.
+    The ORM filter grammar cannot express this predicate; pretending otherwise
+    is what produced a silent mass-disable, so the query says what it means.
     """
-    candidates: dict[str, dict] = {}
-    for activity in (
-        {"last_seen_at": ["<", cutoff]},
-        {"last_seen_at": ["is", "not set"], "modified": ["<", cutoff]},
-    ):
-        for row in frappe.get_all(
-            "User Device",
-            filters={"enabled": 1, **activity},
-            fields=["name", "user"],
-            order_by="modified asc",
-            limit=limit,
-        ):
-            candidates.setdefault(row["name"], row)
-    return list(candidates.values())[:limit]
+    rows = frappe.db.sql(
+        """
+        SELECT name, user
+        FROM `tabUser Device`
+        WHERE enabled = 1
+          AND COALESCE(last_seen_at, modified) < %(cutoff)s
+        ORDER BY COALESCE(last_seen_at, modified) ASC
+        LIMIT %(limit)s
+        """,
+        {"cutoff": cutoff, "limit": limit},
+        as_dict=True,
+    )
+    return rows
 
 
 def _soft_disable_stale_tokens(staleness_days: int) -> int:

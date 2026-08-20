@@ -1,4 +1,4 @@
-from . import __version__ as app_version
+from . import __version__ as app_version  # noqa: F401  (read by frappe.get_hooks)
 
 app_name = "fcm_notification"
 app_title = "Fcm Notification"
@@ -116,6 +116,14 @@ doc_events = {
         "on_trash": "fcm_notification.send_notification.invalidate_user_devices_cache_hooks",
     },
 }
+
+# Migration
+# ---------
+# Keeps the User Device owner permissions in step with
+# FCM Notification Settings.device_owner_roles — the app ships no
+# product-specific roles of its own.
+
+after_migrate = ["fcm_notification.device_perms.sync_device_owner_roles"]
 
 # Scheduled Tasks
 # ---------------

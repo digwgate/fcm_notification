@@ -37,6 +37,45 @@ Both windows live in **FCM Notification Settings → Configuration → Token Lif
 to the defaults above while unset. Tick **Disable Token Sweep** in the same section to switch the
 job off.
 
+Staleness is measured on `COALESCE(last_seen_at, modified)`: `last_seen_at` is the registration
+timestamp a client refreshes on every launch, and `modified` covers rows that predate it. Retention
+still counts from `modified` — for a disabled row that is when it was disabled.
+
+### Programmatic API (0.1.0)
+
+Other apps import `fcm_notification.api`. It is the transport layer only — what to send, to whom and
+when belongs to the calling app. **None of these commit; the caller owns the transaction.**
+
+```python
+from fcm_notification.api import (
+    register_device,        # idempotent upsert keyed on installation_id -> {"name", "rebound"}
+    unbind_device,          # owner-scoped logout disable -> bool (False = silent no-op)
+    get_devices,            # (user=..., guest_id=...) enabled rows that still hold a token
+    delete_user_devices,    # erasure: hard delete, no Deleted Document copy -> count
+    delete_guest_devices,
+    send_to_devices,        # chunked multicast -> [DeviceSendResult(device, ok, error_code, disabled)]
+    is_transient_error_code,
+    supports_fid_targeting,
+)
+```
+
+`send_to_devices(devices, title, body, data=None, opts=None)` sends in chunks of 50, passes `data`
+through verbatim (after the 4 KB trim) and honours per-message `priority`, `ttl`, `collapse`,
+`channel_id` and `analytics_label`, writing the Android and APNs equivalents of each. A token is
+disabled when FCM says it is dead (`UNREGISTERED`, `SenderIdMismatch`), and for `INVALID_ARGUMENT`
+only when something else in the same chunk succeeded — a chunk where every token is rejected the
+same way is a payload bug and is logged instead. 429/5xx/timeouts never disable anything.
+
+Registration writes `installation_id` and a UNIQUE `token_hash`, so one token can never be live on
+two rows: re-registering a token another install holds clears it there (`disabled_reason = Rebound`).
+The older whitelisted `handle_user_device` stays token-keyed for existing clients and re-binds that
+row instead of inserting a second one.
+
+Two switches, both in **FCM Notification Settings**: **Push Desk Notification Logs** (on unless
+unticked) gates the `Notification Log` hook for sites whose devices belong to customers, and
+**Device Owner Roles** lists the roles allowed to manage their own `User Device` rows — synced to
+Custom DocPerms on every migrate.
+
 ## Supporting Organization
 
 The development of this app was commissioned by [Searchosis marketing Pvt Ltd](searchosis.com)

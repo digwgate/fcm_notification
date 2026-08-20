@@ -62,6 +62,18 @@ def install_settings(monkeypatch, allowed_types=None):
     return settings
 
 
+def install_queues(monkeypatch, queues):
+    """Pretend the bench provisions ``queues``.
+
+    ``dispatch_queue`` asks the bench which queues exist (gap #9), and a pure-unit
+    run has no bench config, so a test that cares which queue is used has to say
+    what the bench looks like.
+    """
+    import frappe.utils.background_jobs as background_jobs
+
+    monkeypatch.setattr(background_jobs, "get_queues_timeout", lambda: queues)
+
+
 def install_throw(monkeypatch):
     def throw(message):
         raise ValueError(message)
@@ -129,6 +141,7 @@ def test_send_direct_notification_sends_to_users_and_devices_once(monkeypatch):
 
 def test_send_direct_notification_enqueues_when_requested(monkeypatch):
     install_settings(monkeypatch)
+    install_queues(monkeypatch, {"short": 300, "notifications_queue": 300})
     enqueued = []
 
     monkeypatch.setattr(

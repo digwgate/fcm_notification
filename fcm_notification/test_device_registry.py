@@ -542,17 +542,15 @@ class TestDeviceRegistry(IntegrationTestCase):
         """The sibling product's clients keep working: a token another row holds
         is MOVED to the caller, not inserted a second time (which the unique
         index would now reject with a 500)."""
-        first = handle_user_device(
-            {
-                "device_token": _token("legacy"),
-                "platform": "Android",
-                "user": _OTHER_USER,
-            }
-        )
-        self.assertEqual(first["result"], "success")
-        original = frappe.db.get_value(
-            DOCTYPE, {"token_hash": token_hash(_token("legacy"))}, "name"
-        )
+        # Seed the OTHER user's row directly. It used to be seeded by passing
+        # "user" to handle_user_device itself — which only worked because the
+        # endpoint honoured a caller-supplied user, the cross-account hole this
+        # suite now pins shut two tests below. A regression fixture must not be
+        # built out of the bug it is meant to survive.
+        original = register_device(
+            _INSTALL_B, _token("legacy"), "android", user=_OTHER_USER
+        )["name"]
+        self.assertEqual(_row(original, "user").user, _OTHER_USER)
 
         rebound = handle_user_device(
             {"device_token": _token("legacy"), "platform": "Android"}
@@ -569,6 +567,51 @@ class TestDeviceRegistry(IntegrationTestCase):
         self.assertEqual(row.enabled, 1)
         self.assertFalse(row.disabled_reason)
         self.assertEqual(row.token_hash, token_hash(_token("legacy")))
+
+    def test_the_caller_does_not_get_to_say_whose_device_it_is(self):
+        """The cross-account hole: a caller-supplied ``user`` must be ignored.
+
+        ``handle_user_device`` is whitelisted and saves with
+        ``ignore_permissions=True``, so honouring a caller-supplied ``user`` let any
+        authenticated caller register their OWN token under somebody else's account
+        and receive that person's pushes. The row must bind to the SESSION user.
+        """
+        handle_user_device(
+            {
+                "device_token": _token("hijack"),
+                "platform": "Android",
+                "user": _OTHER_USER,
+            }
+        )
+
+        row = _row(
+            frappe.db.get_value(DOCTYPE, {"token_hash": token_hash(_token("hijack"))}, "name"),
+            "user",
+        )
+        self.assertEqual(
+            row.user,
+            frappe.session.user,
+            "a caller-supplied user was honoured — this is the push-hijack hole",
+        )
+        self.assertNotEqual(row.user, _OTHER_USER)
+
+    def test_a_rebind_also_ignores_a_caller_supplied_user(self):
+        """The same rule on the OTHER branch — the rebind path updates from the payload."""
+        register_device(_INSTALL_B, _token("hijack2"), "android", user=_OTHER_USER)
+
+        handle_user_device(
+            {
+                "device_token": _token("hijack2"),
+                "platform": "Android",
+                "user": _OTHER_USER,
+            }
+        )
+
+        row = _row(
+            frappe.db.get_value(DOCTYPE, {"token_hash": token_hash(_token("hijack2"))}, "name"),
+            "user",
+        )
+        self.assertEqual(row.user, frappe.session.user, "the rebind must bind to the caller")
 
     def test_legacy_registration_leaves_installation_id_null(self):
         handle_user_device({"device_token": _token("legacy2"), "platform": "Android"})

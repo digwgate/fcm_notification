@@ -48,7 +48,13 @@ def handle_user_device(device_data: dict) -> dict:
         frappe.throw(frappe._("Device ID is required"))
 
     device_data = dict(device_data)
-    device_data.setdefault("user", frappe.session.user)
+    # The caller does NOT get to say whose device this is. This used to be a
+    # setdefault, so a caller-supplied "user" won through to a save that runs
+    # with ignore_permissions=True — any authenticated caller could register
+    # their OWN token under somebody else's account and receive that person's
+    # pushes. The endpoint's documented job has always been "upsert the CALLING
+    # user's device", so this makes the code say what the contract says.
+    device_data["user"] = frappe.session.user
 
     name = frappe.db.get_value(
         "User Device", {"token_hash": token_hash(device_token)}, "name"

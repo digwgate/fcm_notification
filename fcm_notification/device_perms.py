@@ -150,18 +150,73 @@ def _apply_owner_roles(roles: List[str]) -> Tuple[List[str], List[str], bool]:
     return added, removed, False
 
 
+# Settings whose declared default is NOT the falsy value a full Single save would
+# write for them. See :func:`ensure_settings_defaults`.
+_NONFALSY_DEFAULTS = {"notification_log_pushes_enabled": 1}
+
+
+def ensure_settings_defaults() -> List[str]:
+    """Store the declared default for any of ``_NONFALSY_DEFAULTS`` that has no value yet.
+
+    Frappe applies a field's ``default`` when a document is NEW. A Single that
+    already exists does not get one for a field added later — and any FULL save of
+    that Single then writes the field's falsy zero-value as if it were a decision.
+
+    That is not hypothetical here: ``seed_device_owner_roles`` below saves the whole
+    Single on the very migrate that introduces ``notification_log_pushes_enabled``,
+    so an UPGRADING site had its Desk-notification pushes silently switched OFF —
+    the exact opposite of the "default 1, so the existing product is unchanged"
+    invariant the switch was added under. A fresh install was fine, which is why
+    the tests did not see it.
+
+    Only writes when the field is genuinely UNSTORED (no ``tabSingles`` row), so a
+    deliberate operator ``0`` — Super E turns this switch off on purpose — is never
+    overwritten. Idempotent: a second run finds the row and does nothing.
+    """
+    # Raw SQL: ``Singles`` is a TABLE, not a DocType, so ``frappe.get_all("Singles")``
+    # raises DoesNotExistError trying to resolve meta for it.
+    fields = list(_NONFALSY_DEFAULTS)
+    placeholders = ", ".join(["%s"] * len(fields))
+    stored = {
+        row[0]
+        for row in frappe.db.sql(
+            f"SELECT field FROM tabSingles WHERE doctype = %s AND field IN ({placeholders})",
+            [SETTINGS_DOCTYPE, *fields],
+        )
+    }
+    filled = []
+    for field, default in _NONFALSY_DEFAULTS.items():
+        if field in stored:
+            continue
+        frappe.db.set_single_value(SETTINGS_DOCTYPE, field, default)
+        filled.append(field)
+    if filled:
+        frappe.clear_cache(doctype=SETTINGS_DOCTYPE)
+    return filled
+
+
 def sync_device_owner_roles() -> dict:
     """``after_migrate`` entry point. Returns a summary for tests and logs."""
     if not frappe.db.exists("DocType", DOCTYPE):
         return {"seeded": [], "added": [], "removed": [], "reset": False}
+
+    # BEFORE the seed: the seed saves the whole Single, which would otherwise write
+    # a zero over any field added in this same migrate.
+    filled = ensure_settings_defaults()
 
     seeded = seed_device_owner_roles()
     added, removed, was_reset = _apply_owner_roles(configured_device_owner_roles())
 
     if seeded or added or removed or was_reset:
         frappe.clear_cache(doctype=DOCTYPE)
-        frappe.logger().info(
+        print(
             f"FCM device owner roles: seeded={seeded} added={added} "
-            f"removed={removed} reset={was_reset}"
+            f"removed={removed} reset={was_reset} defaults_filled={filled}"
         )
-    return {"seeded": seeded, "added": added, "removed": removed, "reset": was_reset}
+    return {
+        "seeded": seeded,
+        "added": added,
+        "removed": removed,
+        "reset": was_reset,
+        "defaults_filled": filled,
+    }

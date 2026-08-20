@@ -212,3 +212,86 @@ class TestDeviceOwnerPerms(IntegrationTestCase):
         self.assertEqual(result["seeded"], [])
         self.assertEqual(result["added"], [])
         self.assertEqual(self._custom_perm_roles(), [])
+
+
+class TestSettingsDefaults(IntegrationTestCase):
+    """``notification_log_pushes_enabled`` must survive the seed's full Single save.
+
+    The bug this pins was found on a real upgrade, not in a test: ``seed_device_owner_roles``
+    saves the WHOLE Single, and Frappe only applies a field's ``default`` to a NEW document — so
+    on the very migrate that introduced this switch, an existing site had it written as ``0``.
+    That silently turned OFF Desk-notification pushes for the sibling product, which is the exact
+    opposite of the "default 1, so the existing product is unchanged" invariant it shipped under.
+    A FRESH install was unaffected, which is why nothing caught it.
+    """
+
+    _FIELD = "notification_log_pushes_enabled"
+
+    def setUp(self):
+        super().setUp()
+        self._original = frappe.db.sql(
+            "SELECT value FROM tabSingles WHERE doctype = %s AND field = %s",
+            (SETTINGS, self._FIELD),
+        )
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        frappe.db.sql(
+            "DELETE FROM tabSingles WHERE doctype = %s AND field = %s", (SETTINGS, self._FIELD)
+        )
+        if self._original:
+            frappe.db.sql(
+                "INSERT INTO tabSingles (doctype, field, value) VALUES (%s, %s, %s)",
+                (SETTINGS, self._FIELD, self._original[0][0]),
+            )
+        frappe.clear_cache(doctype=SETTINGS)
+
+    def _unstore(self):
+        frappe.db.sql(
+            "DELETE FROM tabSingles WHERE doctype = %s AND field = %s", (SETTINGS, self._FIELD)
+        )
+        frappe.clear_cache(doctype=SETTINGS)
+
+    def _stored(self):
+        return frappe.db.sql(
+            "SELECT value FROM tabSingles WHERE doctype = %s AND field = %s",
+            (SETTINGS, self._FIELD),
+        )
+
+    def test_an_unstored_switch_is_filled_with_its_declared_default(self):
+        self._unstore()
+
+        self.assertEqual(device_perms.ensure_settings_defaults(), [self._FIELD])
+        self.assertEqual(
+            frappe.db.get_single_value(SETTINGS, self._FIELD),
+            1,
+            "an upgrading site must keep pushing Desk notifications",
+        )
+
+    def test_a_deliberate_zero_is_never_overwritten(self):
+        """Super E turns this switch OFF on purpose. The fill must not fight that."""
+        frappe.db.set_single_value(SETTINGS, self._FIELD, 0)
+        frappe.clear_cache(doctype=SETTINGS)
+
+        self.assertEqual(device_perms.ensure_settings_defaults(), [])
+        self.assertEqual(frappe.db.get_single_value(SETTINGS, self._FIELD), 0)
+
+    def test_filling_is_idempotent(self):
+        self._unstore()
+
+        device_perms.ensure_settings_defaults()
+        self.assertEqual(device_perms.ensure_settings_defaults(), [], "second run must be a no-op")
+
+    def test_the_seeds_full_single_save_cannot_zero_it(self):
+        """THE regression: run the whole after_migrate lane against an unstored switch."""
+        self._unstore()
+        self.assertFalse(self._stored(), "precondition: the switch has no stored value")
+
+        device_perms.sync_device_owner_roles()
+
+        self.assertEqual(
+            frappe.db.get_single_value(SETTINGS, self._FIELD),
+            1,
+            "the seed's settings.save() wrote a zero over the declared default",
+        )
+

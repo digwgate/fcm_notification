@@ -6,7 +6,8 @@ send, to whom and when belongs to the product app that calls these.
 Every name here is re-exported from the module that implements it, so a consumer
 never has to know (or track) which one that is:
 
-- ``register_device`` / ``unbind_device`` / ``get_devices`` /
+- ``register_device`` / ``unbind_device`` / ``unbind_device_by_token`` /
+  ``unbind_all_devices`` / ``get_devices`` /
   ``delete_user_devices`` / ``delete_guest_devices`` — ``device_registry``
 - ``send_to_devices`` / ``DeviceSendResult`` / ``is_transient_error_code`` /
   ``supports_fid_targeting`` — ``send_notification``
@@ -20,7 +21,9 @@ from fcm_notification.device_registry import (
     get_devices,
     register_device,
     token_hash,
+    unbind_all_devices,
     unbind_device,
+    unbind_device_by_token,
 )
 from fcm_notification.send_notification import (
     DeviceSendResult,
@@ -39,5 +42,7 @@ __all__ = [
     "send_to_devices",
     "supports_fid_targeting",
     "token_hash",
+    "unbind_all_devices",
     "unbind_device",
+    "unbind_device_by_token",
 ]

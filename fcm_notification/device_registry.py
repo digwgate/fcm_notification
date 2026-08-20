@@ -281,11 +281,49 @@ def register_device(
     return {"name": name, "rebound": rebound}
 
 
-def unbind_device(installation_id, *, user=None, guest_id=None) -> bool:
-    """Disable one install's row on logout, owner-scoped.
+def _logout_rows(names: List[str], subjects) -> None:
+    """Disable + de-credential the named rows. NO commit; the caller owns the txn.
 
     The token is cleared to NULL as well as disabled, so the next account on this
-    phone can register the same token without colliding with a dead row.
+    handset can register the same token without colliding with a dead row — and
+    so the row stops being a deliverable push target the instant it is written.
+    The row itself SURVIVES: a relaunch re-registers onto it by ``installation_id``
+    instead of inserting a duplicate. Hard deletion is erasure's job, not logout's.
+    """
+    if not names:
+        return
+    placeholders = ", ".join(["%s"] * len(names))
+    frappe.db.sql(
+        f"""
+        UPDATE `tabUser Device`
+        SET enabled = 0,
+            device_token = NULL,
+            token_hash = NULL,
+            disabled_reason = 'Logged Out',
+            modified = %s,
+            modified_by = %s
+        WHERE name IN ({placeholders})
+        """,
+        [now_datetime(), frappe.session.user, *names],
+    )
+    _invalidate(subjects)
+
+
+def _owner_filters(user, guest_id) -> Optional[Dict[str, Any]]:
+    """The filter dict scoping a query to ONE subject, or ``None`` for neither.
+
+    Never returns an unscoped dict: an empty filter on a bulk logout would log
+    out the whole site.
+    """
+    if user:
+        return {"user": user}
+    if guest_id:
+        return {"guest_id": guest_id}
+    return None
+
+
+def unbind_device(installation_id, *, user=None, guest_id=None) -> bool:
+    """Disable ONE install's row on logout, owner-scoped.
 
     Returns ``False`` — a silent no-op, never an error — for an unknown install or
     a row that belongs to somebody else. Issues NO commit.
@@ -306,21 +344,65 @@ def unbind_device(installation_id, *, user=None, guest_id=None) -> bool:
     if not owned:
         return False
 
-    frappe.db.sql(
-        """
-        UPDATE `tabUser Device`
-        SET enabled = 0,
-            device_token = NULL,
-            token_hash = NULL,
-            disabled_reason = 'Logged Out',
-            modified = %s,
-            modified_by = %s
-        WHERE name = %s
-        """,
-        (now_datetime(), frappe.session.user, row["name"]),
-    )
-    _invalidate([(row.get("user"), row.get("guest_id"))])
+    _logout_rows([row["name"]], [(row.get("user"), row.get("guest_id"))])
     return True
+
+
+def unbind_device_by_token(token, *, user=None, guest_id=None) -> bool:
+    """Disable the row holding ``token``, owner-scoped. Same no-op contract.
+
+    For a client that knows its FCM token but not its installation id — the
+    legacy shape. Keyed on ``token_hash`` (the UNIQUE column), never on the raw
+    token: the hash is what the index covers, and it keeps the credential out of
+    the WHERE clause a slow-query log might capture.
+    """
+    digest = token_hash(token)
+    if not digest:
+        return False
+
+    row = frappe.db.get_value(
+        DOCTYPE, {"token_hash": digest}, ["name", "user", "guest_id"], as_dict=True
+    )
+    if not row:
+        return False
+
+    owned = (user and row.get("user") == user) or (
+        guest_id and row.get("guest_id") == guest_id
+    )
+    if not owned:
+        return False
+
+    _logout_rows([row["name"]], [(row.get("user"), row.get("guest_id"))])
+    return True
+
+
+def unbind_all_devices(*, user=None, guest_id=None) -> int:
+    """Log this subject out EVERYWHERE. Returns how many rows were unbound.
+
+    Scoped by construction: with neither subject this returns 0 rather than
+    matching every row on the site — an unscoped bulk logout is the one mistake
+    this function must make unrepresentable.
+
+    Only rows that are still live (enabled, still holding a token) are touched,
+    so a repeat call is a 0 rather than a second write.
+    """
+    filters = _owner_filters(user, guest_id)
+    if filters is None:
+        return 0
+
+    rows = frappe.get_all(
+        DOCTYPE,
+        filters={**filters, "enabled": 1, "device_token": ["is", "set"]},
+        fields=["name", "user", "guest_id"],
+    )
+    if not rows:
+        return 0
+
+    _logout_rows(
+        [row["name"] for row in rows],
+        [(row.get("user"), row.get("guest_id")) for row in rows],
+    )
+    return len(rows)
 
 
 def get_devices(user=None, guest_id=None) -> List[Dict[str, Any]]:

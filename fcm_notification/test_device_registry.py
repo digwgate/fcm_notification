@@ -27,7 +27,9 @@ from fcm_notification.device_registry import (
     get_devices,
     register_device,
     token_hash,
+    unbind_all_devices,
     unbind_device,
+    unbind_device_by_token,
 )
 from fcm_notification.fcm_notification.doctype.user_device.user_device import (
     handle_user_device,
@@ -373,6 +375,73 @@ class TestDeviceRegistry(IntegrationTestCase):
 
         self.assertFalse(unbind_device(_INSTALL_A, guest_id="somebody-else"))
         self.assertTrue(unbind_device(_INSTALL_A, guest_id=_GUEST))
+
+    # --- unbind by token / unbind everywhere --------------------------------
+
+    def test_unbind_by_token_disables_the_row_holding_it(self):
+        registered = register_device(_INSTALL_A, _token("bytok"), "android", user=_USER)
+
+        self.assertTrue(unbind_device_by_token(_token("bytok"), user=_USER))
+
+        row = _row(registered["name"], "enabled", "device_token", "token_hash")
+        self.assertEqual(row.enabled, 0)
+        self.assertIsNone(row.device_token)
+        self.assertIsNone(row.token_hash)
+
+    def test_unbind_by_token_is_owner_scoped(self):
+        registered = register_device(_INSTALL_A, _token("theirs"), "android", user=_USER)
+
+        self.assertFalse(unbind_device_by_token(_token("theirs"), user=_OTHER_USER))
+        self.assertEqual(_row(registered["name"], "enabled").enabled, 1)
+
+    def test_unbind_by_an_unknown_or_empty_token_is_a_silent_no_op(self):
+        self.assertFalse(unbind_device_by_token(_token("never-registered"), user=_USER))
+        self.assertFalse(unbind_device_by_token("", user=_USER))
+        self.assertFalse(unbind_device_by_token(None, user=_USER))
+
+    def test_unbind_all_logs_this_subject_out_everywhere(self):
+        a = register_device(_INSTALL_A, _token("all-1"), "android", user=_USER)
+        b = register_device(_INSTALL_B, _token("all-2"), "ios", user=_USER)
+
+        self.assertEqual(unbind_all_devices(user=_USER), 2)
+
+        for registered in (a, b):
+            row = _row(registered["name"], "enabled", "device_token", "disabled_reason")
+            self.assertEqual(row.enabled, 0)
+            self.assertIsNone(row.device_token)
+            self.assertEqual(row.disabled_reason, "Logged Out")
+        self.assertEqual(get_devices(user=_USER), [])
+
+    def test_unbind_all_never_reaches_another_subject(self):
+        mine = register_device(_INSTALL_A, _token("mine-all"), "android", user=_USER)
+        theirs = register_device(_INSTALL_B, _token("theirs-all"), "android", guest_id=_GUEST)
+
+        self.assertEqual(unbind_all_devices(user=_USER), 1)
+
+        self.assertEqual(_row(mine["name"], "enabled").enabled, 0)
+        self.assertEqual(
+            _row(theirs["name"], "enabled").enabled, 1, "another subject must be untouched"
+        )
+
+    def test_unbind_all_without_a_subject_touches_nothing(self):
+        """The one mistake this must make unrepresentable.
+
+        An unscoped bulk logout would empty the whole site's registry, so a call
+        with neither subject has to be a 0 and not a match-everything filter.
+        """
+        registered = register_device(_INSTALL_A, _token("safe"), "android", user=_USER)
+
+        self.assertEqual(unbind_all_devices(), 0)
+        self.assertEqual(unbind_all_devices(user=None, guest_id=None), 0)
+        self.assertEqual(unbind_all_devices(user="", guest_id=""), 0)
+
+        self.assertEqual(_row(registered["name"], "enabled").enabled, 1)
+
+    def test_unbind_all_is_idempotent(self):
+        register_device(_INSTALL_A, _token("twice"), "android", user=_USER)
+
+        self.assertEqual(unbind_all_devices(user=_USER), 1)
+        self.assertEqual(unbind_all_devices(user=_USER), 0, "already-out rows are not re-written")
 
     # --- reads -------------------------------------------------------------
 

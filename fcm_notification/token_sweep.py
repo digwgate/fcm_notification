@@ -46,7 +46,10 @@ from __future__ import annotations
 import frappe
 from frappe.utils import add_to_date, cint, now_datetime
 
-from fcm_notification.send_notification import invalidate_user_devices_cache
+from fcm_notification.send_notification import (
+    invalidate_guest_devices_cache,
+    invalidate_user_devices_cache,
+)
 
 _DEFAULT_RETENTION_DAYS = 30
 _DEFAULT_STALENESS_DAYS = 90
@@ -102,7 +105,7 @@ def _stale_candidates(cutoff, limit: int) -> list[dict]:
     """
     rows = frappe.db.sql(
         """
-        SELECT name, user
+        SELECT name, user, guest_id
         FROM `tabUser Device`
         WHERE enabled = 1
           AND COALESCE(last_seen_at, modified) < %(cutoff)s
@@ -124,10 +127,10 @@ def _soft_disable_stale_tokens(staleness_days: int) -> int:
     Touches ``modified`` so the row enters the retention window for the
     next sweep's hard-delete pass. Issues a single bulk ``frappe.db.set_value``
     call (filter-dict form) instead of one call per row, reducing N+1 DB
-    round-trips to 1. After the bulk update the per-user device cache is
-    explicitly invalidated for every affected user because ``db.set_value``
-    does not fire document hooks (including the ``User Device`` cache
-    invalidation hooks).
+    round-trips to 1. After the bulk update the device cache is explicitly
+    invalidated for every affected subject — ``user`` AND ``guest_id`` — because
+    ``db.set_value`` does not fire document hooks (including the ``User Device``
+    cache invalidation hooks).
 
     Capped at ``_MAX_ROWS_PER_RUN``, oldest first — which also keeps the
     ``IN`` list of the bulk UPDATE to a sane size.
@@ -147,11 +150,20 @@ def _soft_disable_stale_tokens(staleness_days: int) -> int:
         {"enabled": 0, "disabled_reason": "Stale"},
     )
 
-    # Invalidate the per-user device cache for every affected user.
-    # db.set_value fires no document hooks, so invalidation must be explicit.
-    affected_users: set[str] = {row["user"] for row in candidates if row.get("user")}
-    for user in affected_users:
+    # Invalidate the device cache for every affected SUBJECT — user AND guest.
+    # db.set_value fires no document hooks, so invalidation must be explicit, and
+    # a row is reachable by `user` OR by `guest_id`: a pre-login handset has no
+    # `user` at all. Invalidating only the user side left a guest's cached list
+    # holding a row this pass had just disabled, and `get_devices` would keep
+    # serving it as sendable until the entry expired on its own.
+    # Deduped as (user, guest_id) pairs so one subject is invalidated once, not
+    # once per device row. Both invalidators ignore a falsy subject.
+    subjects: set[tuple[str | None, str | None]] = {
+        (row.get("user"), row.get("guest_id")) for row in candidates
+    }
+    for user, guest_id in subjects:
         invalidate_user_devices_cache(user)
+        invalidate_guest_devices_cache(guest_id)
 
     return len(candidates)
 

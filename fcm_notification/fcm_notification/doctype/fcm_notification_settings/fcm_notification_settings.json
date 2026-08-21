@@ -7,10 +7,16 @@
  "field_order": [
   "settings_section",
   "credentials",
+  "queue",
+  "enqueue_after_commit",
   "section_break_znut",
+  "notification_log_pushes_enabled",
   "notifications_trigger_type",
+  "device_registry_section",
+  "device_owner_roles",
   "configuration_tab",
   "analytics_label",
+  "preserved_payload_keys",
   "android_notification_options_section",
   "collapse_key",
   "priority",
@@ -128,8 +134,8 @@
    "label": "Sound Name"
   },
   {
-   "default": "1",
-   "description": "Set to True to set the critical alert flag on the sound configuration (optional).",
+   "default": "0",
+   "description": "Set the critical alert flag on the sound configuration. Requires Apple's critical-alert entitlement \u2014 leave off for ordinary app notifications.",
    "fieldname": "ios_sound_critical",
    "fieldtype": "Check",
    "label": "Critical"
@@ -211,11 +217,49 @@
    "fieldtype": "Table",
    "label": "Blocked Words and Patterns",
    "options": "Notification Center Blocked Pattern"
+  },
+  {
+   "description": "RQ queue for asynchronous Notification Log sends. Leave empty to use notifications_queue when the bench defines it, and the always-present short queue when it does not.",
+   "fieldname": "queue",
+   "fieldtype": "Data",
+   "label": "Dispatch Queue"
+  },
+  {
+   "default": "1",
+   "description": "Push every Desk Notification Log through FCM. Uncheck on a site whose devices belong to customers, so operator Desk alerts are not pushed to them with an unroutable Desk payload. Unset reads as enabled.",
+   "fieldname": "notification_log_pushes_enabled",
+   "fieldtype": "Check",
+   "label": "Push Desk Notification Logs"
+  },
+  {
+   "fieldname": "device_registry_section",
+   "fieldtype": "Section Break",
+   "label": "Device Registry"
+  },
+  {
+   "description": "Roles that may read/write/create their OWN User Device rows. Synced to Custom DocPerms on every migrate; empty means only the roles in the DocType itself.",
+   "fieldname": "device_owner_roles",
+   "fieldtype": "Table",
+   "label": "Device Owner Roles",
+   "options": "FCM Device Owner Role"
+  },
+  {
+   "description": "Extra data-payload keys never truncated by the 4 KB trim, one per line or comma separated. doctype, docname, type, kind, ref, nid, route, spa_route, ticket_id and conversation_id are always preserved.",
+   "fieldname": "preserved_payload_keys",
+   "fieldtype": "Small Text",
+   "label": "Preserved Payload Keys"
+  },
+  {
+   "default": "0",
+   "description": "Hold an asynchronous send until the transaction that created the Notification Log commits. The after_insert hook fires inside that transaction, so without this a rolled-back document can still be pushed. Off keeps the historical behaviour.",
+   "fieldname": "enqueue_after_commit",
+   "fieldtype": "Check",
+   "label": "Enqueue After Commit"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-07-24 20:50:00.000000",
+ "modified": "2026-08-20 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Fcm Notification",
  "name": "FCM Notification Settings",

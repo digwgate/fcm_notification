@@ -28,7 +28,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_to_date, now_datetime
 
-from fcm_notification import token_sweep
+from fcm_notification import device_registry, token_sweep
 
 _TEST_USER = "Administrator"
 _TEST_TOKEN_PREFIX = "fcm-sweep-test-"
@@ -54,6 +54,32 @@ def _insert_user_device(token_suffix: str, *, enabled: bool, days_ago: int) -> s
 
     # Back-date `modified`. update_modified=False prevents the framework
     # from re-stamping it during the write.
+    if days_ago > 0:
+        backdate = add_to_date(now_datetime(), days=-days_ago)
+        frappe.db.set_value(
+            "User Device", doc.name, "modified", backdate, update_modified=False
+        )
+    return doc.name
+
+
+def _insert_guest_device(token_suffix: str, *, guest_id: str, days_ago: int) -> str:
+    """Insert an ENABLED, guest-owned ``User Device`` row (no ``user`` at all).
+
+    This is what a handset looks like before anyone signs in — the row the app
+    creates on first launch, and the reason the sweep cannot invalidate by user
+    alone.
+    """
+    doc = frappe.get_doc(
+        {
+            "doctype": "User Device",
+            "guest_id": guest_id,
+            "device_token": f"{_TEST_TOKEN_PREFIX}{token_suffix}",
+            "platform": "Android",
+            "enabled": 1,
+        }
+    )
+    doc.flags.ignore_permissions = True
+    doc.insert()
     if days_ago > 0:
         backdate = add_to_date(now_datetime(), days=-days_ago)
         frappe.db.set_value(
@@ -130,8 +156,10 @@ class TestTokenSweep(IntegrationTestCase):
 
         token_sweep.run()
 
-        self.assertTrue(frappe.db.exists("User Device", name),
-            "Rows disabled within the retention window must NOT be deleted.")
+        self.assertTrue(
+            frappe.db.exists("User Device", name),
+            "Rows disabled within the retention window must NOT be deleted.",
+        )
 
     def test_enabled_row_within_staleness_is_preserved(self):
         name = _insert_user_device("retain-enabled", enabled=True, days_ago=30)
@@ -139,8 +167,35 @@ class TestTokenSweep(IntegrationTestCase):
         token_sweep.run()
 
         self.assertTrue(frappe.db.exists("User Device", name))
-        self.assertEqual(frappe.db.get_value("User Device", name, "enabled"), 1,
-            "Rows active within the staleness window must NOT be soft-disabled.")
+        self.assertEqual(
+            frappe.db.get_value("User Device", name, "enabled"),
+            1,
+            "Rows active within the staleness window must NOT be soft-disabled.",
+        )
+
+    def test_a_null_last_seen_at_falls_back_to_modified_not_to_stale(self):
+        """The upgrade trap: every row predating 0.1.0 has last_seen_at NULL.
+
+        This pinned the two-pass ORM emulation that shipped first. Frappe wraps a
+        nullable comparison as ``IFNULL(col, '')``, so ``last_seen_at < cutoff``
+        matched EVERY NULL row — `'' < any date` is true — and the first sweep
+        after the upgrade would have soft-disabled the whole live fleet a batch at
+        a time, ignoring ``modified`` entirely. The row below is recently active
+        and must survive precisely because the fallback is real.
+        """
+        name = _insert_user_device("null-last-seen", enabled=True, days_ago=2)
+        self.assertIsNone(
+            frappe.db.get_value("User Device", name, "last_seen_at"),
+            "fixture precondition: the row must have no last_seen_at",
+        )
+
+        token_sweep.run()
+
+        self.assertEqual(
+            frappe.db.get_value("User Device", name, "enabled"),
+            1,
+            "a NULL last_seen_at must fall back to modified, never read as stale",
+        )
 
     def test_hard_delete_leaves_no_deleted_document_blob(self):
         """The pass must delete permanently. Plain ``delete_doc`` copies each
@@ -170,7 +225,9 @@ class TestTokenSweep(IntegrationTestCase):
         with mock.patch.object(token_sweep, "_MAX_ROWS_PER_RUN", 2):
             result = token_sweep.run()
 
-        self.assertEqual(result["soft_disabled"], 2, "Soft-disable pass ignored the cap.")
+        self.assertEqual(
+            result["soft_disabled"], 2, "Soft-disable pass ignored the cap."
+        )
         self.assertEqual(result["hard_deleted"], 2, "Hard-delete pass ignored the cap.")
         # Leftovers survive for the next run rather than being lost.
         self.assertTrue(
@@ -280,6 +337,38 @@ class TestTokenSweep(IntegrationTestCase):
         )
         mock_invalidate.assert_called_once_with(_TEST_USER)
 
+    def test_soft_disable_invalidates_the_guest_cache_not_only_the_user_cache(self):
+        """A guest-owned stale row must not stay sendable from a warm guest cache.
+
+        The candidate query used to select ``name, user`` only, and the
+        invalidation loop keyed on ``user`` — which is NULL for a pre-login
+        handset. So a row this pass had just disabled kept being served by
+        ``get_devices(guest_id=...)`` out of cache for up to an hour, i.e. the
+        sweep reported a disable it had not made effective.
+
+        Asserted through the real cache rather than a mocked invalidator: the
+        defect was that a cached list stayed sendable, and only a real read can
+        show that. Reverting the fix (drop ``guest_id`` from the SELECT, or drop
+        the ``invalidate_guest_devices_cache`` call) fails this test.
+        """
+        guest_id = "sweep-guest-a"
+        _insert_guest_device("guest-a", guest_id=guest_id, days_ago=120)
+
+        # Warm the cache the way a real send would, and prove it is warm.
+        warm = device_registry.get_devices(guest_id=guest_id)
+        self.assertEqual(
+            len(warm), 1, "fixture should be sendable BEFORE the sweep runs"
+        )
+
+        token_sweep._soft_disable_stale_tokens(90)
+
+        self.assertEqual(
+            device_registry.get_devices(guest_id=guest_id),
+            [],
+            "a stale guest device stayed sendable from cache after the sweep "
+            "disabled it — the guest cache was never invalidated",
+        )
+
     def test_soft_disable_no_candidates_skips_mutation_and_cache(self):
         """With NO qualifying rows, the ``if not candidates`` guard must
         short-circuit before any DB mutation or cache invalidation.
@@ -305,7 +394,9 @@ class TestTokenSweep(IntegrationTestCase):
         self.assertEqual(count, 0)
         # No User Device mutation issued (the guard returned before set_value).
         user_device_set_value_calls = [
-            c for c in mock_set_value.call_args_list if c.args and c.args[0] == "User Device"
+            c
+            for c in mock_set_value.call_args_list
+            if c.args and c.args[0] == "User Device"
         ]
         self.assertEqual(
             len(user_device_set_value_calls),
@@ -369,9 +460,7 @@ def test_soft_disable_stamps_stale_reason_in_the_same_bulk_update(monkeypatch):
         "db",
         SimpleNamespace(set_value=lambda *args: set_value_calls.append(args)),
     )
-    monkeypatch.setattr(
-        token_sweep, "invalidate_user_devices_cache", lambda user: None
-    )
+    monkeypatch.setattr(token_sweep, "invalidate_user_devices_cache", lambda user: None)
 
     assert token_sweep._soft_disable_stale_tokens(90) == 1
     assert set_value_calls == [

@@ -8,10 +8,15 @@ latest token, and the backend deals with cleanup.
 Two cleanup passes per run:
 
 1. **Soft-disable** rows where ``enabled=1`` AND
-   ``modified < now() - token_staleness_days`` (default 90 days),
-   stamping ``disabled_reason = "Stale"`` in the same UPDATE.
-   Mirrors the FCM Flutter doc's recommended staleness window for tokens
-   that haven't seen any feedback in a while.
+   ``COALESCE(last_seen_at, modified) < now() - token_staleness_days``
+   (default 90 days), stamping ``disabled_reason = "Stale"`` in the same
+   UPDATE. Mirrors the FCM Flutter doc's recommended staleness window for
+   tokens that haven't seen any feedback in a while.
+
+   ``last_seen_at`` is the fact that matters — the client bumps it on every
+   registration — and ``modified`` is the fallback for rows that predate the
+   field or were written by the legacy path, so there is ONE staleness fact
+   rather than two.
 
 2. **Hard-delete** rows where ``enabled=0`` AND
    ``modified < now() - disabled_token_retention_days`` (default 30
@@ -41,7 +46,10 @@ from __future__ import annotations
 import frappe
 from frappe.utils import add_to_date, cint, now_datetime
 
-from fcm_notification.send_notification import invalidate_user_devices_cache
+from fcm_notification.send_notification import (
+    invalidate_guest_devices_cache,
+    invalidate_user_devices_cache,
+)
 
 _DEFAULT_RETENTION_DAYS = 30
 _DEFAULT_STALENESS_DAYS = 90
@@ -81,6 +89,35 @@ def _read_settings() -> tuple[bool, int, int]:
     return enabled, retention_days, staleness_days
 
 
+def _stale_candidates(cutoff, limit: int) -> list[dict]:
+    """Enabled rows whose last activity — ``COALESCE(last_seen_at, modified)`` —
+    predates ``cutoff``, oldest first.
+
+    Raw SQL, deliberately. This was two ``get_all`` passes emulating the
+    COALESCE, and the emulation was WRONG in the one direction that matters:
+    Frappe wraps a nullable comparison as ``IFNULL(col, '')``, so the
+    ``last_seen_at < cutoff`` pass matched every row whose ``last_seen_at`` is
+    NULL — `'' < '2026-05-22'` is true — regardless of ``modified``. Every row
+    predating 0.1.0 has a NULL ``last_seen_at``, so the first sweep after the
+    upgrade would have soft-disabled the entire live fleet, a batch per day.
+    The ORM filter grammar cannot express this predicate; pretending otherwise
+    is what produced a silent mass-disable, so the query says what it means.
+    """
+    rows = frappe.db.sql(
+        """
+        SELECT name, user, guest_id
+        FROM `tabUser Device`
+        WHERE enabled = 1
+          AND COALESCE(last_seen_at, modified) < %(cutoff)s
+        ORDER BY COALESCE(last_seen_at, modified) ASC
+        LIMIT %(limit)s
+        """,
+        {"cutoff": cutoff, "limit": limit},
+        as_dict=True,
+    )
+    return rows
+
+
 def _soft_disable_stale_tokens(staleness_days: int) -> int:
     """Flip ``enabled=0`` on rows that have been silent past the staleness window.
 
@@ -90,22 +127,16 @@ def _soft_disable_stale_tokens(staleness_days: int) -> int:
     Touches ``modified`` so the row enters the retention window for the
     next sweep's hard-delete pass. Issues a single bulk ``frappe.db.set_value``
     call (filter-dict form) instead of one call per row, reducing N+1 DB
-    round-trips to 1. After the bulk update the per-user device cache is
-    explicitly invalidated for every affected user because ``db.set_value``
-    does not fire document hooks (including the ``User Device`` cache
-    invalidation hooks).
+    round-trips to 1. After the bulk update the device cache is explicitly
+    invalidated for every affected subject — ``user`` AND ``guest_id`` — because
+    ``db.set_value`` does not fire document hooks (including the ``User Device``
+    cache invalidation hooks).
 
     Capped at ``_MAX_ROWS_PER_RUN``, oldest first — which also keeps the
     ``IN`` list of the bulk UPDATE to a sane size.
     """
     cutoff = add_to_date(now_datetime(), days=-staleness_days)
-    candidates = frappe.get_all(
-        "User Device",
-        filters={"enabled": 1, "modified": ["<", cutoff]},
-        fields=["name", "user"],
-        order_by="modified asc",
-        limit=_MAX_ROWS_PER_RUN,
-    )
+    candidates = _stale_candidates(cutoff, _MAX_ROWS_PER_RUN)
     if not candidates:
         return 0
 
@@ -119,17 +150,32 @@ def _soft_disable_stale_tokens(staleness_days: int) -> int:
         {"enabled": 0, "disabled_reason": "Stale"},
     )
 
-    # Invalidate the per-user device cache for every affected user.
-    # db.set_value fires no document hooks, so invalidation must be explicit.
-    affected_users: set[str] = {row["user"] for row in candidates if row.get("user")}
-    for user in affected_users:
+    # Invalidate the device cache for every affected SUBJECT — user AND guest.
+    # db.set_value fires no document hooks, so invalidation must be explicit, and
+    # a row is reachable by `user` OR by `guest_id`: a pre-login handset has no
+    # `user` at all. Invalidating only the user side left a guest's cached list
+    # holding a row this pass had just disabled, and `get_devices` would keep
+    # serving it as sendable until the entry expired on its own.
+    # Deduped as (user, guest_id) pairs so one subject is invalidated once, not
+    # once per device row. Both invalidators ignore a falsy subject.
+    subjects: set[tuple[str | None, str | None]] = {
+        (row.get("user"), row.get("guest_id")) for row in candidates
+    }
+    for user, guest_id in subjects:
         invalidate_user_devices_cache(user)
+        invalidate_guest_devices_cache(guest_id)
 
     return len(candidates)
 
 
 def _hard_delete_disabled_tokens(retention_days: int) -> int:
     """Hard-delete rows that have been disabled past the retention window.
+
+    Measured on ``modified``, NOT on ``COALESCE(last_seen_at, modified)``: for a
+    disabled row ``modified`` is when it was disabled, which is exactly what the
+    retention grace period is counting from. ``last_seen_at`` is older by
+    definition and would delete the row early.
+
 
     ``delete_permanently=True`` is what makes this actually reclaim space:
     without it ``frappe.delete_doc`` copies every row into ``tabDeleted

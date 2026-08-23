@@ -319,7 +319,7 @@ def test_stringify_data_caps_payload_size():
 
 
 def _install_failing_send(monkeypatch, error):
-    def raise_error(self, device, data, title, body):
+    def raise_error(self, device, data, title, body, opts=None):
         raise error
 
     monkeypatch.setattr(
@@ -463,3 +463,40 @@ def test_enable_user_devices_writes_nothing_when_no_row_matches(monkeypatch):
     assert send_module.enable_user_devices("u@example.com", "Stale") == 0
     assert set_value_calls == []
     assert invalidated == []
+
+
+def test_send_direct_notification_threads_per_message_opts(monkeypatch):
+    """``opts`` (collapse_key & co.) reach the per-device send on both the sync
+    and the enqueued path — a chat thread collapses on its conversation id."""
+    install_settings(monkeypatch)
+    install_queues(monkeypatch, {"short": 300, "notifications_queue": 300})
+    sent, enqueued = [], []
+    monkeypatch.setattr(
+        send_module,
+        "get_user_devices",
+        lambda user: [{"device_token": "user-token", "name": "device-1", "user": user}],
+    )
+    monkeypatch.setattr(
+        send_module.FCMNotificationService,
+        "send_to_device",
+        lambda self, device, data, title, body, opts=None: sent.append(opts),
+    )
+    monkeypatch.setattr(
+        send_module,
+        "enqueue",
+        lambda method, **kwargs: enqueued.append(kwargs),
+    )
+    opts = {"collapse_key": "CONV-26-00001"}
+
+    send_module.send_direct_notification(
+        title="T", body="B", users="user@example.com", notification_type="Alert", opts=opts
+    )
+    assert sent == [opts]
+
+    send_module.send_direct_notification(
+        title="T", body="B", users="user@example.com", notification_type="Alert", enqueue=True, opts=opts
+    )
+    assert enqueued[0]["opts"] == opts
+    worker_kwargs = {k: v for k, v in enqueued[0].items() if k not in ("queue", "enqueue_after_commit")}
+    send_module._queue_send_device(**worker_kwargs)
+    assert sent == [opts, opts]

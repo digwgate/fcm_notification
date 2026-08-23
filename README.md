@@ -71,6 +71,12 @@ two rows: re-registering a token another install holds clears it there (`disable
 The older whitelisted `handle_user_device` stays token-keyed for existing clients and re-binds that
 row instead of inserting a second one.
 
+`send_direct_notification(..., opts=None)` (and the `dispatch_direct` it wraps) takes the same per-message
+`opts` — a chat thread passes `{"collapse_key": <conversation>}` so a burst folds into one banner.
+With `enqueue=True` the `opts` ride the RQ job, so **restart the workers when upgrading to this
+version** — a job enqueued by new code and picked up by an old worker fails with `TypeError` on the
+unknown kwarg.
+
 Two switches, both in **FCM Notification Settings**: **Push Desk Notification Logs** (on unless
 unticked) gates the `Notification Log` hook for sites whose devices belong to customers, and
 **Device Owner Roles** lists the roles allowed to manage their own `User Device` rows — synced to

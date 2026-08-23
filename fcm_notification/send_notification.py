@@ -486,10 +486,11 @@ class FCMNotificationService:
         notification_name: Optional[str] = None,
         notification_type: Optional[str] = None,
         user: Optional[str] = None,
+        opts: Optional[Dict[str, Any]] = None,
     ):
         """Send message to a single device, handling cleanup on token errors."""
         try:
-            self.send_to_device(device, data, title, body)
+            self.send_to_device(device, data, title, body, opts)
         except messaging.UnregisteredError as e:
             self._disable_device(
                 device,
@@ -519,14 +520,15 @@ class FCMNotificationService:
         data: Dict[str, str],
         title: str,
         body: str,
+        opts: Optional[Dict[str, Any]] = None,
     ):
         self.ensure_initialized()
         message = messaging.Message(
             data=data,
             token=self._device_token(device),
-            android=self.build_android_config(title, body),
-            apns=self.build_apns_config(title, body, data),
-            fcm_options=self.build_common_fcm_options(),
+            android=self.build_android_config(title, body, opts),
+            apns=self.build_apns_config(title, body, data, opts),
+            fcm_options=self.build_common_fcm_options(opts),
         )
         messaging.send(message)
 
@@ -591,8 +593,14 @@ class FCMNotificationService:
         docname: Optional[str] = None,
         notification_type: Optional[str] = None,
         send_async: bool = False,
+        opts: Optional[Dict[str, Any]] = None,
     ):
-        """Send a direct FCM notification without a Notification Log document."""
+        """Send a direct FCM notification without a Notification Log document.
+
+        ``opts`` carries the per-message overrides (``collapse_key``, ``priority``,
+        ``ttl``, ``channel_id``, ``analytics_label``) — same contract as
+        :func:`send_to_devices`; anything absent falls back to the settings default.
+        """
         user_list = self._normalize_values(users)
         direct_devices = self._prepare_direct_devices(devices)
 
@@ -635,6 +643,7 @@ class FCMNotificationService:
                     body=body,
                     notification_type=notification_type,
                     user=user,
+                    opts=opts,
                 )
             else:
                 self.safe_send_to_device(
@@ -644,6 +653,7 @@ class FCMNotificationService:
                     body=body,
                     notification_type=notification_type,
                     user=user,
+                    opts=opts,
                 )
 
     def _prepare_devices(
@@ -885,6 +895,7 @@ def send_direct_notification(
     docname: Optional[str] = None,
     notification_type: Optional[str] = None,
     enqueue: bool = False,
+    opts: Optional[Dict[str, Any]] = None,
 ):
     """Python-only entrypoint to send an FCM notification directly."""
     service = FCMNotificationService()
@@ -898,6 +909,7 @@ def send_direct_notification(
         docname=docname,
         notification_type=notification_type,
         send_async=enqueue,
+        opts=opts,
     )
 
 
@@ -909,6 +921,7 @@ def _queue_send_device(
     notification_name: Optional[str] = None,
     notification_type: Optional[str] = None,
     user: Optional[str] = None,
+    opts: Optional[Dict[str, Any]] = None,
 ):
     """Worker-safe wrapper to send messages from the enqueue queue."""
     service = FCMNotificationService()
@@ -922,6 +935,7 @@ def _queue_send_device(
         notification_name=notification_name,
         notification_type=notification_type,
         user=user,
+        opts=opts,
     )
 
 

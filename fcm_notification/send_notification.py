@@ -39,6 +39,18 @@ _SENDER_ID_MISMATCH = "SENDER_ID_MISMATCH"
 _INVALID_ARGUMENT = "INVALID_ARGUMENT"
 _NO_TOKEN = "NO_TOKEN"
 
+# Apple owns these names inside the ``aps`` dictionary. ``firebase_admin``'s
+# encoder writes each of them itself and then RAISES
+# ``ValueError: Multiple specifications for <key> in Aps.`` if ``custom_data``
+# repeats one — killing the whole send, every platform in the batch, before a
+# byte reaches FCM. Super E's routing payload carries ``category``, so every
+# iOS push failed on it. The data block still travels: FCM copies
+# ``Message.data`` to the APNs payload alongside ``aps``, so dropping the
+# duplicate here costs nothing a client can read.
+_APS_RESERVED_KEYS = frozenset(
+    {"alert", "badge", "sound", "category", "thread-id", "content-available", "mutable-content"}
+)
+
 # Which FCM error codes can cost a device its row, and the ``disabled_reason``
 # Select value each one writes. ``INVALID_ARGUMENT`` is listed but applied only in
 # a MIXED chunk — see ``FCMNotificationService.send_multicast_chunk``.
@@ -375,7 +387,11 @@ class FCMNotificationService:
                 aps=messaging.Aps(
                     alert=messaging.ApsAlert(title=title or None, body=body or None),
                     sound=sound,
-                    custom_data=data,
+                    custom_data={
+                        key: value
+                        for key, value in (data or {}).items()
+                        if key not in _APS_RESERVED_KEYS
+                    },
                 )
             ),
             fcm_options=apns_options,

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from firebase_admin import exceptions as firebase_exceptions
+from firebase_admin import _messaging_encoder
 from firebase_admin import messaging
 
 import fcm_notification.send_notification as send_module
@@ -354,6 +355,44 @@ def test_per_message_overrides_reach_android_and_apns(monkeypatch):
     # on `data`.
     assert message.notification.title == "T"
     assert message.data == {"kind": "order", "ref": "SO-1"}
+
+
+def test_a_data_key_apple_reserves_does_not_kill_the_send(monkeypatch):
+    """``category`` in the routing payload must not blow up the whole message.
+
+    ``firebase_admin`` writes ``alert``/``badge``/``sound``/``category``/
+    ``thread-id`` into ``aps`` itself and raises ``ValueError: Multiple
+    specifications for category in Aps.`` if ``custom_data`` repeats one. The
+    raise happens at ENCODE time, not construction, and takes the whole
+    multicast down — every device, every platform — so the test has to encode.
+
+    Super E's push data always carries ``category``; before the filter every
+    single iOS send failed here, with the outbox row reporting a ValueError and
+    zero devices contacted.
+    """
+    install_settings(monkeypatch)
+    install_db(monkeypatch)
+    calls = install_multicast(monkeypatch, lambda index, tokens: [None])
+
+    send_module.send_to_devices(
+        devices(1),
+        "T",
+        "B",
+        data={"kind": "order", "ref": "SO-1", "category": "orders", "sound": "x"},
+    )
+
+    message = calls[0]
+    encoded = _messaging_encoder.MessageEncoder.encode_apns(message.apns)
+
+    # The reserved names are not duplicated in from the routing payload; only
+    # Apple's own (here unset, so absent) values may occupy them.
+    assert "category" not in encoded["payload"]["aps"]
+    assert "sound" not in encoded["payload"]["aps"]
+    # Nothing is lost: FCM copies `Message.data` next to `aps` on the wire.
+    assert message.data["category"] == "orders"
+    assert message.data["kind"] == "order"
+    # A non-reserved key still rides inside `aps` as before, for callers that read it there.
+    assert encoded["payload"]["aps"]["kind"] == "order"
 
 
 def test_settings_supply_the_defaults_when_no_opts(monkeypatch):

@@ -2,7 +2,7 @@
 
 This release adds two UNIQUE indexes to `User Device` (`installation_id`, `token_hash`)
 and a `pre_model_sync` patch that makes the existing rows fit them. The app is
-**shared**: `qnina.new` is a production install of it, so the upgrade is an
+**shared**: `qnina.localhost` is a production install of it, so the upgrade is an
 owner-supervised sitting, not a background migrate.
 
 Everything below assumes:
@@ -18,22 +18,22 @@ migrate both sites in the same sitting.
 
 ---
 
-## A. Take a copy of the `qnina.new` database
+## A. Take a copy of the `qnina.localhost` database
 
 Never dry-run against the live site. `bench backup` writes a gzipped dump without
 anyone having to read `site_config.json`:
 
 ```sh
-bench --site qnina.new backup
-# → sites/qnina.new/private/backups/<timestamp>-qnina_new-database.sql.gz
-ls -t sites/qnina.new/private/backups/*-database.sql.gz | head -1
+bench --site qnina.localhost backup
+# → sites/qnina.localhost/private/backups/<timestamp>-qnina_localhost-database.sql.gz
+ls -t sites/qnina.localhost/private/backups/*-database.sql.gz | head -1
 ```
 
 Restore it into a scratch site (delete it when the sitting is over):
 
 ```sh
 bench new-site qnina.copy --admin-password admin --db-name qnina_copy
-bench --site qnina.copy restore $(ls -t sites/qnina.new/private/backups/*-database.sql.gz | head -1)
+bench --site qnina.copy restore $(ls -t sites/qnina.localhost/private/backups/*-database.sql.gz | head -1)
 bench --site qnina.copy list-apps           # confirm fcm_notification came across
 ```
 
@@ -116,26 +116,26 @@ bench drop-site qnina.copy --force
 
 ---
 
-## C. The sitting: migrate `qnina.new`, then `supere.plat`
+## C. The sitting: migrate `qnina.localhost`, then `supere.localhost`
 
 ```sh
 # 0. one checkout for both sites
 cd $APP && git checkout feature/0.1.0-hardening && cd $BENCH
 
 # 1. fresh safety backup of the live site
-bench --site qnina.new backup --with-files
+bench --site qnina.localhost backup --with-files
 
 # 2. the production sibling first — it is the one with data to migrate
-bench --site qnina.new migrate
-bench --site qnina.new clear-cache
+bench --site qnina.localhost migrate
+bench --site qnina.localhost clear-cache
 
 # 3. Super E: first install, then migrate
-bench --site supere.plat install-app fcm_notification
-bench --site supere.plat migrate
-bench --site supere.plat clear-cache
+bench --site supere.localhost install-app fcm_notification
+bench --site supere.localhost migrate
+bench --site supere.localhost clear-cache
 
 # 4. Super E is customer-facing: do NOT push Desk Notification Logs to it
-bench --site supere.plat console <<'PY'
+bench --site supere.localhost console <<'PY'
 frappe.db.set_single_value("FCM Notification Settings", "notification_log_pushes_enabled", 0)
 frappe.db.commit()
 PY
@@ -148,13 +148,13 @@ bench restart
 Post-checks on both sites:
 
 ```sh
-bench --site qnina.new mariadb <<'SQL'
+bench --site qnina.localhost mariadb <<'SQL'
 SELECT token_hash, COUNT(*) c FROM `tabUser Device`
 WHERE token_hash IS NOT NULL GROUP BY token_hash HAVING c > 1;   -- expect empty
 SELECT COUNT(*) FROM `tabUser Device` WHERE enabled = 1 AND device_token IS NOT NULL;
 SQL
 
-bench --site qnina.new execute \
+bench --site qnina.localhost execute \
   "frappe.db.get_value" --kwargs "{'doctype':'Patch Log','filters':{'patch':['like','%dedupe_user_device_tokens%']},'fieldname':'patch'}"
 ```
 

@@ -4,3 +4,6 @@
 *.swp
 tags
 fcm_notification/docs/current
+
+.agents
+skills-lock.json

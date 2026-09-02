@@ -83,6 +83,19 @@ _DEVICE_CACHE_PREFIX = "fcm_devices"
 DEVICE_CACHE_TTL_SECONDS = 3600
 
 
+def _is_silent(title: Optional[str], body: Optional[str]) -> bool:
+    """Whether this send carries no user-visible text at all.
+
+    A caller that passes ``title=""`` and ``body=""`` wants a data-only wake-up
+    (the account-disable ``force_logout`` push is the one in tree), not a tray
+    entry with nothing in it. Both platforms decide "display something" on the
+    *presence* of the notification/alert structure rather than on whether it has
+    text, so blanking the fields is not enough — the structure has to be left
+    out. This is the single predicate the three build sites share.
+    """
+    return not (title or "").strip() and not (body or "").strip()
+
+
 def _setting(settings: Any, fieldname: str, default: Any = None) -> Any:
     """Read one settings field, tolerating a Single that predates it.
 
@@ -321,12 +334,21 @@ class FCMNotificationService:
             priority=self._message_option(opts, "priority", "priority"),
             ttl=ttl,
             restricted_package_name=_setting(self.settings, "restricted_package_name"),
-            notification=messaging.AndroidNotification(
-                title=title or None,
-                body=body or None,
-                channel_id=self._message_option(
-                    opts, "channel_id", "channel_id", "channel"
-                ),
+            # Omitted entirely for a silent send, not merely blanked: Android
+            # decides "show a tray entry" on the *presence* of this block, not
+            # on whether it has text, so an AndroidNotification(None, None)
+            # posts a visible notification with nothing in it. See
+            # ``_is_silent``.
+            notification=(
+                None
+                if _is_silent(title, body)
+                else messaging.AndroidNotification(
+                    title=title or None,
+                    body=body or None,
+                    channel_id=self._message_option(
+                        opts, "channel_id", "channel_id", "channel"
+                    ),
+                )
             ),
             fcm_options=android_options,
         )
@@ -381,19 +403,29 @@ class FCMNotificationService:
             else None
         )
 
+        silent = _is_silent(title, body)
+        custom_data = {
+            key: value
+            for key, value in (data or {}).items()
+            if key not in _APS_RESERVED_KEYS
+        }
+
+        # A silent send is `content-available` with no alert and no sound —
+        # APNs shows a banner for an alert dictionary even when its title and
+        # body are absent, and plays the sound regardless.
+        aps = (
+            messaging.Aps(content_available=True, custom_data=custom_data)
+            if silent
+            else messaging.Aps(
+                alert=messaging.ApsAlert(title=title or None, body=body or None),
+                sound=sound,
+                custom_data=custom_data,
+            )
+        )
+
         return messaging.APNSConfig(
             headers=self.build_apns_headers(opts),
-            payload=messaging.APNSPayload(
-                aps=messaging.Aps(
-                    alert=messaging.ApsAlert(title=title or None, body=body or None),
-                    sound=sound,
-                    custom_data={
-                        key: value
-                        for key, value in (data or {}).items()
-                        if key not in _APS_RESERVED_KEYS
-                    },
-                )
-            ),
+            payload=messaging.APNSPayload(aps=aps),
             fcm_options=apns_options,
         )
 
@@ -426,7 +458,11 @@ class FCMNotificationService:
         message = messaging.MulticastMessage(
             tokens=[self._device_token(device) for device in devices],
             data=data,
-            notification=messaging.Notification(title=title or None, body=body or None),
+            notification=(
+                None
+                if _is_silent(title, body)
+                else messaging.Notification(title=title or None, body=body or None)
+            ),
             android=self.build_android_config(title, body, opts),
             apns=self.build_apns_config(title, body, data, opts),
             fcm_options=self.build_common_fcm_options(opts),

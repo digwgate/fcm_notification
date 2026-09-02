@@ -500,3 +500,61 @@ def test_send_direct_notification_threads_per_message_opts(monkeypatch):
     worker_kwargs = {k: v for k, v in enqueued[0].items() if k not in ("queue", "enqueue_after_commit")}
     send_module._queue_send_device(**worker_kwargs)
     assert sent == [opts, opts]
+
+
+class TestSilentSend:
+    """A send with no title and no body must not post an empty tray entry.
+
+    The account-disable ``force_logout`` push passes ``title=""``/``body=""`` to
+    wake the app, not to say anything. Blanking the fields is not enough: both
+    platforms decide "display something" on the presence of the
+    notification/alert structure, so it has to be omitted outright.
+    """
+
+    def test_is_silent_predicate(self):
+        assert send_module._is_silent("", "")
+        assert send_module._is_silent(None, None)
+        assert send_module._is_silent("   ", "\n")
+        assert not send_module._is_silent("Order delivered", "")
+        assert not send_module._is_silent("", "Your driver is nearby")
+
+    def test_android_omits_the_notification_block_when_silent(self, monkeypatch):
+        install_settings(monkeypatch)
+        service = send_module.FCMNotificationService()
+
+        assert service.build_android_config("", "").notification is None
+
+    def test_android_keeps_the_notification_block_when_there_is_text(
+        self, monkeypatch
+    ):
+        install_settings(monkeypatch)
+        service = send_module.FCMNotificationService()
+
+        notification = service.build_android_config("Delivered", "").notification
+
+        assert notification is not None
+        assert notification.title == "Delivered"
+
+    def test_apns_sends_content_available_with_no_alert_when_silent(
+        self, monkeypatch
+    ):
+        install_settings(monkeypatch)
+        service = send_module.FCMNotificationService()
+
+        aps = service.build_apns_config("", "", {"action": "force_logout"}).payload.aps
+
+        assert aps.content_available is True
+        assert aps.alert is None
+        assert aps.sound is None
+        # The data still rides along — the wake-up is the whole point.
+        assert aps.custom_data == {"action": "force_logout"}
+
+    def test_apns_keeps_the_alert_when_there_is_text(self, monkeypatch):
+        install_settings(monkeypatch)
+        service = send_module.FCMNotificationService()
+
+        aps = service.build_apns_config("Delivered", "Enjoy", {}).payload.aps
+
+        assert aps.alert is not None
+        assert aps.alert.title == "Delivered"
+        assert not aps.content_available
